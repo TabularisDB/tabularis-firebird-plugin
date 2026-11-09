@@ -3,6 +3,7 @@ name = "firebird-plugin"
 version = "0.2.0-dev.1"
 edition = "2021"
 description = "Tabularis driver plugin for Firebird"
+repository = "https://github.com/TabularisDB/firebird-plugin"
 license = "Apache-2.0"
 publish = false
 

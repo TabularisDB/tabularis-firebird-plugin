@@ -1,6 +1,6 @@
 # Driver completion (unreleased)
 
-The published v0.1.0 tag and registry-signed assets remain unchanged. Work continues on `feat/driver-completion`; completed items below are development code, not a new published release.
+The published v0.1.0 tag and registry-signed assets remain unchanged in the original repository. Development and future releases continue on `main` in [TabularisDB/firebird-plugin](https://github.com/TabularisDB/firebird-plugin); completed items below are development code, not a new published release.
 
 - [x] Host `cancel` notifications interrupt the matching request, including a stalled authentication handshake. No notification response is emitted; queued requests remain usable.
 - [x] Honor `connect_timeout_secs` (default 10) and `query_timeout_secs` (default 0, unlimited). Zero disables the corresponding deadline.
