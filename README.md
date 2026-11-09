@@ -2,6 +2,8 @@
 
 Read-only Firebird network driver for [Tabularis](https://github.com/TabularisDB/tabularis), built with a locally patched `rsfbclient-rust` wire driver. No Firebird client DLL is required. This is an initial implementation, not a complete driver yet.
 
+[Install from the Tabularis registry](https://registry.tabularis.dev/plugins/firebird) or download [release v0.1.0](https://github.com/lejyfps/tabularis-firebird-plugin/releases/tag/v0.1.0). The registry lists all five platforms and marks the original Firebird request as fulfilled.
+
 ## Build and install
 
 ```powershell
@@ -113,20 +115,19 @@ This must return an invalid-params error rather than success. The generated `jus
 
 ## Publishing
 
-The shared package workflow builds and tests Linux x64/ARM64, macOS x64/ARM64 and Windows x64 bundles on native GitHub runners on every push/PR, on manual dispatch, and before a tagged release. Each ZIP includes the executable, `.tabularium`, Apache license and third-party notices. `tests/package.ps1` extracts each bundle and checks executable discovery, JSON-RPC initialization and invalid connection parameters. Packaging includes dotfiles explicitly, so the manifest is present on Windows too. A tag must equal `v` plus the Cargo/manifest version. Linux x64 builds use Ubuntu 22.04 (glibc 2.35); ARM64 uses Ubuntu 24.04 (glibc 2.39). Older Linux runtimes are not validated.
+The shared package workflow builds and tests Linux x64/ARM64, macOS x64/ARM64 and Windows x64 bundles on native GitHub runners on every push/PR, on manual dispatch, and before a tagged release. Each ZIP includes the executable, `.tabularium`, Apache license and third-party notices. `tests/package.ps1` extracts each bundle and checks executable discovery, JSON-RPC initialization and invalid connection parameters. Packaging includes dotfiles explicitly, so the manifest is present on Windows too. The standalone manifest asset uses GitHub's normalized `default.tabularium` name, and publishing skips existing files to preserve registry-signed hashes. Do not rerun an older publishing workflow that overwrites release assets. A tag must equal `v` plus the Cargo/manifest version. Linux x64 builds use Ubuntu 22.04 (glibc 2.35); ARM64 uses Ubuntu 24.04 (glibc 2.39). Older Linux runtimes are not validated.
 
 CI validates the manifest with `tests/validate_manifest.py` against the official registry driver schema captured on 2026-11-09 in `tests/driver-manifest.schema.json`. The snapshot avoids HTTP 403 responses from the registry to GitHub runners; refresh it from `https://registry.tabularis.dev/manifest.schema.json?kind=driver` when registry fields change. The strict schema forbids an IDE `$schema` field in the manifest itself.
 
 The [public Firebird request](https://registry.tabularis.dev/api/requests/01M4VG6Z7G81RR5G9A694JCPGR) asks for connection setup, metadata inspection, query execution, type handling and documentation for local/server deployments. Its next step explicitly defines a first read-only feature set; type handling is marked as stretch. This implementation covers those functional areas using local/server TCP connections. The brief does not explicitly settle whether embedded mode is required for final acceptance; it is not implemented or advertised here.
 
-To publish, push `v0.1.0` only after reviewing the candidate. The release workflow uploads the five ZIPs and the standalone `.tabularium` asset. Then submit the repository at [registry.tabularis.dev/submit](https://registry.tabularis.dev/submit), using the GitHub account that owns the existing Firebird claim. Actual registry ingestion, signing and bounty approval happen after publication; schema/package validation does not claim those have occurred.
+Version 0.1.0 is published and approved in the [registry](https://registry.tabularis.dev/plugins/firebird), with five platform assets and registry integrity signatures. The public Firebird request is marked fulfilled; this status does not constitute a separate manual certification of every optional feature. For future versions, update the Cargo/manifest version together, review the candidate, then push its matching `v*` tag. Keep published tags and signed release assets unchanged.
 
 ## Remaining work
 
-External release steps:
+Remaining validation:
 
-- Publish the reviewed `v0.1.0` candidate and submit its repository to the registry. Actual registry ingestion/signing cannot be validated before a release exists.
-- Obtain final bounty review, including confirmation that documented local-server TCP deployment satisfies the open brief. The public brief defines a read-only first scope but does not explicitly settle embedded mode.
+- The public brief defines a read-only first scope but does not explicitly settle embedded mode. Any additional maintainer acceptance requirements need separate confirmation; embedded access is not advertised here.
 - Linux/macOS builds and extracted-package RPC checks are validated on native runners; live Firebird/Tabularis GUI checks on those operating systems remain outside the Windows validation performed here.
 
 Known limits and optional extensions:

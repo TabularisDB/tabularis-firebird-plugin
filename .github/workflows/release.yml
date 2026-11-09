@@ -20,10 +20,13 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+      - name: Use GitHub's normalized manifest asset name
+        run: cp .tabularium default.tabularium
       - uses: softprops/action-gh-release@v2
         with:
+          overwrite_files: false
           body_path: RELEASE_NOTES.md
           files: |
             artifacts/*.zip
-            .tabularium
+            default.tabularium
           fail_on_unmatched_files: true
