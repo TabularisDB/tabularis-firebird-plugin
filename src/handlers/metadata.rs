@@ -23,7 +23,8 @@ fn connect(params: &Value) -> Result<Client, PluginError> {
 
 fn object_name<'a>(params: &'a Value, key: &str) -> Result<&'a str, PluginError> {
     params
-        .get(key)
+        .get(format!("{key}_name"))
+        .or_else(|| params.get(key))
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
         .ok_or_else(|| PluginError::invalid_params(format!("{key} must be a non-empty string")))
@@ -103,34 +104,9 @@ pub fn get_indexes(id: Value, params: &Value) -> Value {
             let name = object_name(params, "table")?;
             let rows =
                 connect(params)?.query_objects(INDEXES_SQL, vec![SqlType::Text(name.into())])?;
-            Ok(Value::Array(group_indexes(rows)))
+            Ok(Value::Array(rows))
         })(),
     )
-}
-
-fn group_indexes(rows: Vec<Value>) -> Vec<Value> {
-    let mut indexes: Vec<Value> = Vec::new();
-    for mut row in rows {
-        let column = row
-            .as_object_mut()
-            .unwrap()
-            .remove("column_name")
-            .unwrap_or(Value::Null);
-        if indexes
-            .last()
-            .is_none_or(|last| last["index_name"] != row["index_name"])
-        {
-            row["columns"] = json!([]);
-            indexes.push(row);
-        }
-        if !column.is_null() {
-            indexes.last_mut().unwrap()["columns"]
-                .as_array_mut()
-                .unwrap()
-                .push(column);
-        }
-    }
-    indexes
 }
 
 const FIELD_TYPE_SQL: &str = r#"TRIM(CASE
@@ -167,19 +143,22 @@ WHERE rf.RDB$RELATION_NAME = ? ORDER BY rf.RDB$FIELD_POSITION
 "#;
 
 const INDEXES_SQL: &str = r#"
-SELECT TRIM(i.RDB$INDEX_NAME) AS "index_name", TRIM(s.RDB$FIELD_NAME) AS "column_name",
+SELECT TRIM(i.RDB$INDEX_NAME) AS "name",
+    COALESCE(TRIM(s.RDB$FIELD_NAME), i.RDB$EXPRESSION_SOURCE, '') AS "column_name",
     (COALESCE(i.RDB$UNIQUE_FLAG, 0) = 1) AS "is_unique",
     EXISTS(SELECT 1 FROM RDB$RELATION_CONSTRAINTS rc
       WHERE rc.RDB$INDEX_NAME = i.RDB$INDEX_NAME AND rc.RDB$CONSTRAINT_TYPE = 'PRIMARY KEY') AS "is_primary",
-    i.RDB$EXPRESSION_SOURCE AS "expression"
+    COALESCE(s.RDB$FIELD_POSITION + 1, 1) AS "seq_in_index",
+    (i.RDB$EXPRESSION_SOURCE IS NOT NULL) AS "is_expression"
 FROM RDB$INDICES i LEFT JOIN RDB$INDEX_SEGMENTS s ON s.RDB$INDEX_NAME = i.RDB$INDEX_NAME
 WHERE i.RDB$RELATION_NAME = ? ORDER BY i.RDB$INDEX_NAME, s.RDB$FIELD_POSITION
 "#;
 
 const FOREIGN_KEYS_SQL: &str = r#"
-SELECT TRIM(rc.RDB$CONSTRAINT_NAME) AS "constraint_name", TRIM(s.RDB$FIELD_NAME) AS "column_name",
-    TRIM(target.RDB$RELATION_NAME) AS "referenced_table", TRIM(ts.RDB$FIELD_NAME) AS "referenced_column",
-    TRIM(ref.RDB$UPDATE_RULE) AS "on_update", TRIM(ref.RDB$DELETE_RULE) AS "on_delete"
+SELECT TRIM(rc.RDB$CONSTRAINT_NAME) AS "name", TRIM(s.RDB$FIELD_NAME) AS "column_name",
+    TRIM(target.RDB$RELATION_NAME) AS "ref_table", TRIM(ts.RDB$FIELD_NAME) AS "ref_column",
+    TRIM(ref.RDB$UPDATE_RULE) AS "on_update", TRIM(ref.RDB$DELETE_RULE) AS "on_delete",
+    s.RDB$FIELD_POSITION + 1 AS "seq_in_fk"
 FROM RDB$RELATION_CONSTRAINTS rc
 JOIN RDB$REF_CONSTRAINTS ref ON ref.RDB$CONSTRAINT_NAME = rc.RDB$CONSTRAINT_NAME
 JOIN RDB$RELATION_CONSTRAINTS target ON target.RDB$CONSTRAINT_NAME = ref.RDB$CONST_NAME_UQ
@@ -272,7 +251,7 @@ pub fn get_routines(id: Value, params: &Value) -> Value {
     )
 }
 
-fn routine(client: &mut Client, name: &str) -> Result<Value, PluginError> {
+fn routine(client: &mut Client, name: &str, kind: Option<&str>) -> Result<Value, PluginError> {
     let mut rows = client.query_objects(r#"
         SELECT CAST('PROCEDURE' AS VARCHAR(9)) AS "routine_type", RDB$PROCEDURE_SOURCE AS "definition"
         FROM RDB$PROCEDURES WHERE RDB$PROCEDURE_NAME = ? AND RDB$PACKAGE_NAME IS NULL
@@ -282,6 +261,9 @@ fn routine(client: &mut Client, name: &str) -> Result<Value, PluginError> {
         FROM RDB$FUNCTIONS WHERE RDB$FUNCTION_NAME = ? AND RDB$PACKAGE_NAME IS NULL
             AND COALESCE(RDB$SYSTEM_FLAG, 0) = 0 AND COALESCE(RDB$LEGACY_FLAG, 0) = 0"#,
         vec![SqlType::Text(name.into()), SqlType::Text(name.into())])?;
+    if let Some(kind) = kind {
+        rows.retain(|row| row["routine_type"] == kind);
+    }
     match rows.len() {
         0 => Err(PluginError::invalid_params("Routine does not exist")),
         1 => Ok(rows.remove(0)),
@@ -297,18 +279,20 @@ pub fn get_routine_parameters(id: Value, params: &Value) -> Value {
         (|| {
             let name = object_name(params, "routine")?;
             let mut client = connect(params)?;
-            let kind = routine(&mut client, name)?;
+            let kind = routine(&mut client, name, None)?;
             let sql = if kind["routine_type"] == "PROCEDURE" {
                 r#"
             SELECT TRIM(p.RDB$PARAMETER_NAME) AS "name", {data_type} AS "data_type",
-                TRIM(CAST(CASE p.RDB$PARAMETER_TYPE WHEN 0 THEN 'IN' ELSE 'OUT' END AS VARCHAR(3))) AS "mode"
+                TRIM(CAST(CASE p.RDB$PARAMETER_TYPE WHEN 0 THEN 'IN' ELSE 'OUT' END AS VARCHAR(3))) AS "mode",
+                p.RDB$PARAMETER_NUMBER + 1 AS "ordinal_position"
             FROM RDB$PROCEDURE_PARAMETERS p JOIN RDB$FIELDS f ON f.RDB$FIELD_NAME = p.RDB$FIELD_SOURCE
             WHERE p.RDB$PROCEDURE_NAME = ? AND p.RDB$PACKAGE_NAME IS NULL
             ORDER BY p.RDB$PARAMETER_TYPE, p.RDB$PARAMETER_NUMBER"#
             } else {
                 r#"
             SELECT COALESCE(TRIM(a.RDB$ARGUMENT_NAME), 'RETURN_VALUE') AS "name", {data_type} AS "data_type",
-                TRIM(CAST(CASE WHEN a.RDB$ARGUMENT_POSITION = r.RDB$RETURN_ARGUMENT THEN 'OUT' ELSE 'IN' END AS VARCHAR(3))) AS "mode"
+                TRIM(CAST(CASE WHEN a.RDB$ARGUMENT_POSITION = r.RDB$RETURN_ARGUMENT THEN 'OUT' ELSE 'IN' END AS VARCHAR(3))) AS "mode",
+                a.RDB$ARGUMENT_POSITION AS "ordinal_position"
             FROM RDB$FUNCTION_ARGUMENTS a JOIN RDB$FIELDS f ON f.RDB$FIELD_NAME = a.RDB$FIELD_SOURCE
             JOIN RDB$FUNCTIONS r ON r.RDB$FUNCTION_NAME = a.RDB$FUNCTION_NAME AND r.RDB$PACKAGE_NAME IS NULL
             WHERE a.RDB$FUNCTION_NAME = ? AND a.RDB$PACKAGE_NAME IS NULL
@@ -327,7 +311,18 @@ pub fn get_routine_definition(id: Value, params: &Value) -> Value {
         id,
         (|| {
             let name = object_name(params, "routine")?;
-            let row = routine(&mut connect(params)?, name)?;
+            let kind = match params.get("routine_type") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(kind)) if matches!(kind.as_str(), "FUNCTION" | "PROCEDURE") => {
+                    Some(kind.as_str())
+                }
+                _ => {
+                    return Err(PluginError::invalid_params(
+                        "routine_type must be FUNCTION or PROCEDURE",
+                    ))
+                }
+            };
+            let row = routine(&mut connect(params)?, name, kind)?;
             row.get("definition")
                 .filter(|v| v.is_string())
                 .cloned()
@@ -484,20 +479,6 @@ mod tests {
     }
 
     #[test]
-    fn combines_index_segments_in_catalog_order() {
-        let rows = vec![
-            json!({"index_name": "COMPOSITE", "column_name": "Z", "is_unique": true, "is_primary": false}),
-            json!({"index_name": "COMPOSITE", "column_name": "A", "is_unique": true, "is_primary": false}),
-            json!({"index_name": "EXPRESSION", "column_name": null, "expression": "UPPER(NAME)"}),
-        ];
-        let grouped = group_indexes(rows);
-        assert_eq!(grouped.len(), 2);
-        assert_eq!(grouped[0]["columns"], json!(["Z", "A"]));
-        assert_eq!(grouped[1]["columns"], json!([]));
-        assert_eq!(grouped[1]["expression"], json!("UPPER(NAME)"));
-    }
-
-    #[test]
     fn rejects_missing_table_before_connecting() {
         for value in [json!({}), json!({"table": ""}), json!({"table": 1})] {
             assert_eq!(
@@ -517,7 +498,7 @@ mod tests {
 
     #[test]
     fn rejects_missing_view_before_connecting() {
-        for value in [json!({}), json!({"view": ""}), json!({"view": 1})] {
+        for value in [json!({}), json!({"view_name": ""}), json!({"view_name": 1})] {
             for handler in [get_view_definition, get_view_columns] {
                 let response = handler(json!(7), &value);
                 assert_eq!(response["id"], json!(7));
@@ -528,7 +509,11 @@ mod tests {
 
     #[test]
     fn rejects_missing_routine_before_connecting() {
-        for value in [json!({}), json!({"routine": ""}), json!({"routine": 1})] {
+        for value in [
+            json!({}),
+            json!({"routine_name": ""}),
+            json!({"routine_name": 1}),
+        ] {
             for handler in [get_routine_definition, get_routine_parameters] {
                 let response = handler(json!(7), &value);
                 assert_eq!(response["id"], json!(7));
@@ -555,6 +540,7 @@ mod tests {
             );
             assert_eq!(response["id"], json!(8));
             assert!(response.get("error").is_none(), "{}", response["error"]);
+            crate::host_contract_tests::validate_response(method, &response["result"]);
             response["result"].clone()
         };
         assert_eq!(call("test_connection", json!({})), json!({"success": true}));
@@ -599,9 +585,10 @@ mod tests {
         assert_eq!(
             indexes
                 .iter()
-                .find(|i| i["index_name"] == "IDX_FB_CHILD_LABEL")
-                .unwrap()["columns"],
-            json!(["LABEL", "ID"])
+                .filter(|i| i["name"] == "IDX_FB_CHILD_LABEL")
+                .map(|i| (i["column_name"].clone(), i["seq_in_index"].clone()))
+                .collect::<Vec<_>>(),
+            vec![(json!("LABEL"), json!(1)), (json!("ID"), json!(2))]
         );
         assert!(indexes
             .iter()
@@ -610,16 +597,36 @@ mod tests {
         assert_eq!(
             fks,
             json!([
-                {"constraint_name":"FK_FB_CHILD_PARENT", "column_name":"TENANT_ID", "referenced_table":"FB_PARENT", "referenced_column":"TENANT_ID", "on_update":"CASCADE", "on_delete":"SET NULL"},
-                {"constraint_name":"FK_FB_CHILD_PARENT", "column_name":"PARENT_ID", "referenced_table":"FB_PARENT", "referenced_column":"ID", "on_update":"CASCADE", "on_delete":"SET NULL"}
+                {"name":"FK_FB_CHILD_PARENT", "column_name":"TENANT_ID", "ref_table":"FB_PARENT", "ref_column":"TENANT_ID", "on_update":"CASCADE", "on_delete":"SET NULL", "seq_in_fk":1},
+                {"name":"FK_FB_CHILD_PARENT", "column_name":"PARENT_ID", "ref_table":"FB_PARENT", "ref_column":"ID", "on_update":"CASCADE", "on_delete":"SET NULL", "seq_in_fk":2}
             ])
         );
         let result = call(
             "execute_query",
-            json!({"query":"SELECT LABEL, FLAG, NOTES FROM FB_CHILD ORDER BY ID", "page":2, "page_size":1}),
+            json!({"query":"SELECT LABEL, FLAG, NOTES FROM FB_CHILD ORDER BY ID", "page":2, "limit":1}),
         );
         assert_eq!(result["total_count"], json!(2));
         assert_eq!(result["rows"], json!([["beta", false, null]]));
+        assert_eq!(result["affected_rows"], json!(0));
+        assert_eq!(
+            result["pagination"],
+            json!({"page":2,"page_size":1,"total_rows":2,"has_more":false})
+        );
+        let first_page = call(
+            "execute_query",
+            json!({"query":"SELECT LABEL FROM FB_CHILD ORDER BY ID", "page":1, "limit":1}),
+        );
+        assert_eq!(first_page["pagination"]["has_more"], json!(true));
+        let grid_limit = call(
+            "execute_query",
+            json!({"query":"SELECT LABEL FROM FB_CHILD ORDER BY ID LIMIT 1 OFFSET 1", "page":1,"limit":500}),
+        );
+        assert_eq!(grid_limit["rows"], json!([["beta"]]));
+        let wrapped_limit = call(
+            "execute_query",
+            json!({"query":"SELECT * FROM (SELECT LABEL FROM FB_CHILD ORDER BY ID LIMIT 1) AS limited_subset", "limit":500,"page":1}),
+        );
+        assert_eq!(wrapped_limit["rows"], json!([["alpha"]]));
         let views = call("get_views", json!({}));
         let views = views.as_array().unwrap();
         assert_eq!(views.len(), 2);
@@ -628,28 +635,30 @@ mod tests {
             .any(|v| v["name"] == "FB_CHILD_VIEW" && v["schema"].is_null()));
         assert!(views.iter().any(|v| v["name"] == "odd' view"));
         assert_eq!(
-            call("get_view_definition", json!({"view":"FB_CHILD_VIEW"})),
+            call("get_view_definition", json!({"view_name":"FB_CHILD_VIEW"})),
             json!("SELECT ID, LABEL FROM FB_CHILD")
         );
-        let view_columns = call("get_view_columns", json!({"view":"FB_CHILD_VIEW"}));
+        let view_columns = call("get_view_columns", json!({"view_name":"FB_CHILD_VIEW"}));
         assert_eq!(view_columns[0]["name"], json!("ID"));
         assert_eq!(view_columns[1]["name"], json!("LABEL"));
         assert_eq!(view_columns[1]["data_type"], json!("VARCHAR(40)"));
         assert_eq!(
-            call("get_view_columns", json!({"view":"odd' view"}))[0]["name"],
+            call("get_view_columns", json!({"view_name":"odd' view"}))[0]["name"],
             json!("mixedCase")
         );
-        assert!(call("get_view_definition", json!({"view":"odd' view"}))
-            .as_str()
-            .unwrap()
-            .contains("mixedCase"));
+        assert!(
+            call("get_view_definition", json!({"view_name":"odd' view"}))
+                .as_str()
+                .unwrap()
+                .contains("mixedCase")
+        );
         assert_eq!(
-            call("get_view_columns", json!({"view":"' OR 1=1 --"})),
+            call("get_view_columns", json!({"view_name":"' OR 1=1 --"})),
             json!([])
         );
         let unknown_view = get_view_definition(
             json!(3),
-            &json!({"params": config.clone(), "view":"' OR 1=1 --"}),
+            &json!({"params": config.clone(), "view_name":"' OR 1=1 --"}),
         );
         assert!(unknown_view.get("error").is_some());
         assert_eq!(
@@ -670,45 +679,63 @@ mod tests {
             .any(|r| r["name"] == "FB_TAX" && r["routine_type"] == "FUNCTION"));
         assert!(!routines.iter().any(|r| r["name"] == "FB_HIDDEN"));
         assert_eq!(
-            call("get_routine_parameters", json!({"routine":"FB_ADD"})),
+            call("get_routine_parameters", json!({"routine_name":"FB_ADD"})),
             json!([
-                {"name":"A", "data_type":"INTEGER", "mode":"IN"},
-                {"name":"B", "data_type":"INTEGER", "mode":"IN"},
-                {"name":"RESULT_VALUE", "data_type":"INTEGER", "mode":"OUT"}
+                {"name":"A", "data_type":"INTEGER", "mode":"IN", "ordinal_position":1},
+                {"name":"B", "data_type":"INTEGER", "mode":"IN", "ordinal_position":2},
+                {"name":"RESULT_VALUE", "data_type":"INTEGER", "mode":"OUT", "ordinal_position":1}
             ])
         );
         assert_eq!(
-            call("get_routine_parameters", json!({"routine":"FB_NO_ARGS"})),
+            call(
+                "get_routine_parameters",
+                json!({"routine_name":"FB_NO_ARGS"})
+            ),
             json!([])
         );
         assert_eq!(
-            call("get_routine_parameters", json!({"routine":"FB_TAX"})),
+            call("get_routine_parameters", json!({"routine_name":"FB_TAX"})),
             json!([
-                {"name":"RETURN_VALUE", "data_type":"DECIMAL(18,2)", "mode":"OUT"},
-                {"name":"AMOUNT", "data_type":"DECIMAL(18,2)", "mode":"IN"},
-                {"name":"RATE", "data_type":"DECIMAL(5,2)", "mode":"IN"}
+                {"name":"RETURN_VALUE", "data_type":"DECIMAL(18,2)", "mode":"OUT", "ordinal_position":0},
+                {"name":"AMOUNT", "data_type":"DECIMAL(18,2)", "mode":"IN", "ordinal_position":1},
+                {"name":"RATE", "data_type":"DECIMAL(5,2)", "mode":"IN", "ordinal_position":2}
             ])
         );
-        assert!(call("get_routine_definition", json!({"routine":"FB_ADD"}))
-            .as_str()
-            .unwrap()
-            .contains("SUSPEND"));
-        assert!(call("get_routine_definition", json!({"routine":"FB_TAX"}))
-            .as_str()
-            .unwrap()
-            .contains("RETURN AMOUNT * RATE"));
-        assert_eq!(
-            call("get_routine_parameters", json!({"routine":"odd' routine"}))[1],
-            json!({"name":"mixedCase", "data_type":"VARCHAR(12)", "mode":"IN"})
-        );
         assert!(
-            call("get_routine_definition", json!({"routine":"odd' routine"}))
+            call("get_routine_definition", json!({"routine_name":"FB_ADD"}))
                 .as_str()
                 .unwrap()
-                .contains("mixedCase")
+                .contains("SUSPEND")
         );
+        assert!(
+            call("get_routine_definition", json!({"routine_name":"FB_TAX"}))
+                .as_str()
+                .unwrap()
+                .contains("RETURN AMOUNT * RATE")
+        );
+        assert_eq!(
+            call(
+                "get_routine_parameters",
+                json!({"routine_name":"odd' routine"})
+            )[1],
+            json!({"name":"mixedCase", "data_type":"VARCHAR(12)", "mode":"IN", "ordinal_position":1})
+        );
+        assert!(call(
+            "get_routine_definition",
+            json!({"routine_name":"odd' routine"})
+        )
+        .as_str()
+        .unwrap()
+        .contains("mixedCase"));
+        assert!(call(
+            "get_routine_definition",
+            json!({"routine_name":"FB_SHARED","routine_type":"FUNCTION"})
+        )
+        .as_str()
+        .unwrap()
+        .contains("RETURN 1"));
         for name in ["' OR 1=1 --", "FB_SHARED", "FB_HIDDEN"] {
-            let params = json!({"params": config.clone(), "routine": name});
+            let params = json!({"params": config.clone(), "routine_name": name});
             assert!(get_routine_definition(json!(4), &params)
                 .get("error")
                 .is_some());
@@ -747,6 +774,29 @@ mod tests {
         let chunked = call("get_all_columns_batch", json!({"tables": many_names}));
         assert_eq!(chunked.as_object().unwrap().len(), 1502);
         assert_eq!(chunked["FB_CHILD"], all_columns["FB_CHILD"]);
+        let template = call(
+            "get_table_query_template",
+            json!({"request":{"table":"FB_CHILD", "kind":"select", "columns":["LABEL"], "limit":1}}),
+        );
+        let preview_result = call("execute_query", json!({"query":template}));
+        assert_eq!(preview_result["columns"], json!(["LABEL"]));
+        assert_eq!(preview_result["total_count"], json!(1));
+        let empty_template = call(
+            "get_table_query_template",
+            json!({"request":{"table":"FB_CHILD", "kind":"select", "limit":0}}),
+        );
+        assert_eq!(
+            call("execute_query", json!({"query":empty_template}))["rows"],
+            json!([])
+        );
+        let quoted_template = call(
+            "get_table_query_template",
+            json!({"request":{"table":"odd' table", "kind":"select", "columns":["mixedCase"]}}),
+        );
+        assert_eq!(
+            call("execute_query", json!({"query":quoted_template}))["columns"],
+            json!(["mixedCase"])
+        );
         let mut client = Client::connect(ConnectionParams::from_value(&config).unwrap()).unwrap();
         assert!(client
             .query(

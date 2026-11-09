@@ -26,7 +26,7 @@ pub fn handle_line(line: &str) -> Value {
         "ping" => handlers::query::ping(id, &params),
         "test_connection" => handlers::query::test_connection(id, &params),
 
-        // Metadata — return empty arrays so the driver loads cleanly.
+        // Metadata.
         "get_databases" => handlers::metadata::get_databases(id, &params),
         "get_schemas" => handlers::metadata::get_schemas(id, &params),
         "get_tables" => handlers::metadata::get_tables(id, &params),
@@ -46,8 +46,9 @@ pub fn handle_line(line: &str) -> Value {
         // View mutation — not implemented by default.
         "create_view" | "alter_view" | "drop_view" => not_implemented(id, &method),
 
-        // Query execution — critical but needs a real driver.
+        // Query execution and SQL previews.
         "execute_query" => handlers::query::execute_query(id, &params),
+        "get_table_query_template" => handlers::query::get_table_query_template(id, &params),
         "explain_query" => handlers::query::explain_query(id, &params),
 
         // CRUD.

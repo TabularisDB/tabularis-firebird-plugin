@@ -23,7 +23,8 @@ The connection uses UTF-8 and SQL dialect 3. A local Firebird server is supporte
 | Method | Status |
 |---|---|
 | `test_connection`, `ping` | Open a real connection and run `SELECT 1 FROM RDB$DATABASE`; failures return JSON-RPC errors. |
-| `execute_query` | Execute a query in a read-only transaction; return columns, rows, total count and elapsed milliseconds. |
+| `execute_query` | Execute a query in a read-only transaction; return columns, rows, `affected_rows: 0`, host pagination, total count and elapsed milliseconds. |
+| `get_table_query_template` | Firebird SELECT previews with `FIRST`, quoted identifiers and optional row limits; UPDATE/DELETE previews include `WHERE 1 = 0` and do not enable execution of writes. |
 | `get_databases` | Return the configured database after checking connectivity. Firebird has no server-wide SQL database catalog. |
 | `get_tables`, `get_columns` | User tables, ordered columns, types, nullability, defaults, primary keys, identity flags and comments. |
 | `get_indexes`, `get_foreign_keys` | Ordered index columns, unique/primary flags, expression source and composite foreign-key mappings with update/delete rules. |
@@ -34,9 +35,13 @@ The connection uses UTF-8 and SQL dialect 3. A local Firebird server is supporte
 | `get_all_columns_batch`, `get_all_foreign_keys_batch` | Metadata grouped by requested table name, reusing one connection per request. |
 | CRUD, DDL, EXPLAIN | Not implemented. The manifest disables editing and table management. |
 
-Each request opens its own connection. `execute_query` accepts optional positive `page` and `page_size` values. Pagination streams the full result to compute `total_count`, retaining only the requested page in memory; large queries can therefore be slow. Without `page_size`, all rows are returned. Use Firebird's `FIRST`/`SKIP` or `ROWS` clauses to bound expensive queries.
+Each request opens its own connection. `execute_query` accepts the host's positive `page` and `limit` values (`page_size` remains an alias). The response includes `pagination: {page, page_size, total_rows, has_more}`, or `null` for an unpaged request. Pagination streams the full result to compute the total, retaining only the requested page in memory; large queries can therefore be slow. Without a page limit, all rows are returned. Use Firebird's `FIRST`/`SKIP` or `ROWS` clauses to bound expensive queries.
 
-Routine discovery excludes package members and legacy external UDFs. A function's return value is an `OUT` parameter named `RETURN_VALUE`, listed before its inputs. External routines without stored PSQL source return an explicit error for definition requests. If a procedure and function share a name, detail requests return an ambiguity error because the host supplies no routine-type discriminator. Routine discovery does not execute the routines.
+Tabularis 0.32's data-grid limit field generates a generic `LIMIT n`, sometimes inside a `limited_subset` wrapper. The plugin translates those terminal clauses to Firebird `ROWS` syntax, with optional `OFFSET`, without treating quoted names, string literals or comments as SQL clauses. SQL templates already use native `FIRST` syntax.
+
+Routine discovery excludes package members and legacy external UDFs. A function's return value is an `OUT` parameter named `RETURN_VALUE`, listed before its inputs. Parameters include the host-required `ordinal_position`. External routines without stored PSQL source return an explicit error for definition requests. If a procedure and function share a name, definition requests can use the host's `routine_type`; parameter requests remain ambiguous because the host supplies no type discriminator for them. Routine discovery does not execute the routines.
+
+The runtime contract follows Tabularis's actual driver implementation: view details use `view_name`, routine details use `routine_name`, foreign keys use `name`/`ref_table`/`ref_column`/`seq_in_fk`, and indexes return one row per segment with `name`/`column_name`/`seq_in_index`. The older `view` and `routine` request names remain accepted. Some plugin-guide examples show older shapes; live tests deserialize responses against the required host fields in `src/host_contract_tests.rs`.
 
 Batch metadata requests require a `tables` array of non-empty names without trailing spaces. Duplicate names are queried once, unknown names map to empty arrays, and an empty list returns `{}`. Names are bound parameters. Queries run in groups of up to 500 table names to stay below Firebird 3's IN-list limit. A schema snapshot uses table discovery and these same bulk queries, rather than connecting or querying separately for every table. Each catalog query uses its own read-only transaction; the snapshot is not atomic across concurrent schema changes.
 
@@ -80,6 +85,8 @@ This single test checks connectivity, a SELECT result, the transaction's read-on
 
 The live suite also covers empty result headers, exact positive/negative decimals and INT128-backed decimals, zero-scale decimals, ordinary floating-point values, NULLs, and reusing a connection after a failed query. Temporal/DECFLOAT coverage includes leap-day dates, four fractional-second digits, named zones in summer and winter, a non-whole-hour offset, all 34 DECFLOAT digits, large exponents and special values, also mixed with a text BLOB. These newer types require Firebird 4+; the portable suite uses 5.0.4. Workspace tests include the vendored wire driver's tests; Clippy targets plugin code without linting third-party implementation details.
 
+An installed Tabularis 0.32.0 was also checked in Web mode on Windows with an isolated profile and Firebird fixture: driver discovery, saved connection, table and view results, routine parameters/definition, the ER diagram with composite-FK edges, and the grid's explicit row limit. Temporary profile, plugin copy, database and servers were removed afterward. This does not replace a native desktop-window smoke test. For additional host checks, `tests/live-firebird.ps1 -AfterTests { ... }` runs a callback while the fixture is alive and retains automatic cleanup.
+
 For a direct JSON-RPC smoke test without a server:
 
 ```powershell
@@ -100,6 +107,25 @@ This must return an invalid-params error rather than success. The generated `jus
 ## Publishing
 
 The included release workflow builds Linux, macOS and Windows bundles when a `v*` tag is pushed. Complete metadata support and live validation before publishing. Submit the released plugin to the Tabularis registry for the [Firebird bounty](https://tabularis.dev/plugins/bounties/firebird).
+
+## Remaining work
+
+Before a first read-only release:
+
+- Repeat the Windows Web smoke test in native desktop mode, including new-connection creation, SQL previews and relevant error dialogs. The installed 0.32.0 host's main browsing and ER flows have been checked in Web mode.
+- Decide the supported Firebird version range and test it. So far, live validation is Firebird 5.0.4 on Windows; catalog SQL assumes Firebird 3+.
+- Validate Linux/macOS builds and release archives, including executable discovery, the manifest, notices and registry ingestion. The release workflow is present but has not been exercised here.
+- Confirm the bounty's exact acceptance criteria and whether a TCP connection to a local server satisfies its local-deployment requirement.
+
+Known limits and optional extensions:
+
+- Pagination reads the full result to count rows, and an unpaged query retains all rows. Large-result performance, cancellation and timeout behavior need further validation.
+- Only UTF-8 / dialect 3 network connections are configurable. Embedded mode, TLS configuration, additional character sets and roles are not exposed.
+- Package routines, legacy UDF metadata, arrays and nonstandard BLOB subtypes are unsupported; ambiguous procedure/function names return an error.
+- Dedicated BLOB export/preview RPCs and EXPLAIN are not implemented.
+- Tabularis 0.32 still displays a Create View action for this read-only driver; the plugin rejects view mutations. Hiding that action requires a host UI change.
+- INSERT/UPDATE/DELETE execution, table/index/FK management and view mutations remain disabled for the read-only milestone. SQL previews do not change this.
+- The local wire-driver patches need maintenance until equivalent upstream APIs are available.
 
 ## References
 

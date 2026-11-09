@@ -1,5 +1,8 @@
 ﻿# Portable Firebird 5 integration test. No service or system installation.
-param([ValidateRange(1024, 65535)][int]$Port = 13050)
+param(
+    [ValidateRange(1024, 65535)][int]$Port = 13050,
+    [scriptblock]$AfterTests
+)
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path $PSScriptRoot -Parent
 Push-Location $repoRoot
@@ -68,15 +71,18 @@ IpcName = tabularis_test_$Port
         jsonrpc = '2.0'; id = 9; method = 'execute_query'
         params = @{
             params = (Get-Content -Raw -LiteralPath $env:FIREBIRD_TEST_CONFIG | ConvertFrom-Json)
-            query = 'SELECT LABEL FROM FB_CHILD ORDER BY ID'; page = 2; page_size = 1
+            query = 'SELECT LABEL FROM FB_CHILD ORDER BY ID'; page = 2; limit = 1
         }
     } | ConvertTo-Json -Depth 5 -Compress
     $response = $request | & ./target/debug/firebird-plugin.exe | ConvertFrom-Json
     if ($LASTEXITCODE -ne 0 -or $response.id -ne 9 -or $response.error -or
-        $response.result.total_count -ne 2 -or $response.result.rows[0][0] -ne 'beta') {
+        $response.result.pagination.total_rows -ne 2 -or $response.result.affected_rows -ne 0 -or
+        $response.result.rows[0][0] -ne 'beta') {
         throw 'Plugin stdio integration test failed'
     }
     Write-Host 'Firebird 5.0.4 integration tests passed.'
+    # Optional host verification shares the fixture lifetime and still gets finally cleanup.
+    if ($AfterTests) { & $AfterTests }
 } finally {
     try {
         if ($null -ne $serverProcess -and !$serverProcess.HasExited) {

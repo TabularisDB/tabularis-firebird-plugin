@@ -23,7 +23,8 @@
     "alter_column": false,
     "create_foreign_keys": false,
     "manage_tables": false,
-    "readonly": true
+    "readonly": true,
+    "table_query_templates": true
   },
   "data_types": [
     {

@@ -19,3 +19,6 @@ rsfbclient-rust = { path = "vendor/rsfbclient-rust" }
 lto = true
 codegen-units = 1
 strip = "symbols"
+
+[dev-dependencies]
+serde = { version = "1", features = ["derive"] }

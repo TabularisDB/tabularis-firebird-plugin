@@ -15,6 +15,9 @@ mod models;
 mod rpc;
 mod utils;
 
+#[cfg(test)]
+mod host_contract_tests;
+
 fn main() {
     let stdin = io::stdin();
     let stdout = io::stdout();
