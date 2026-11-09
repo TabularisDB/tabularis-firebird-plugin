@@ -1,5 +1,4 @@
 {
-  "$schema": "https://registry.tabularis.dev/manifest.schema.json?kind=driver",
   "name": "firebird",
   "version": "0.1.0",
   "description": "Tabularis driver plugin for Firebird",
