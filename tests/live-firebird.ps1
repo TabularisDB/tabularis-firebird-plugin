@@ -3,7 +3,9 @@ param(
     [ValidateSet('3', '4', '5')][string]$Version = '5',
     [ValidateRange(1024, 65535)][int]$Port = 13050,
     [ValidateSet('Default','ChaCha64','ChaCha','Arc4','Disabled')][string]$ServerWireCrypt = 'Default',
-    [scriptblock]$AfterTests
+    [scriptblock]$AfterTests,
+    [switch]$OperationalTests,
+    [ValidateRange(5, 600)][int]$OperationalDurationSeconds = 30
 )
 $ErrorActionPreference = 'Stop'
 $savedProgressPreference = $ProgressPreference
@@ -105,6 +107,9 @@ IpcName = tabularis_test_$Port
     Write-Host "Firebird $($package.Version) integration tests passed (server wire encryption: $ServerWireCrypt)."
     # Optional host verification shares the fixture lifetime and still gets finally cleanup.
     if ($AfterTests) { & $AfterTests }
+    if ($OperationalTests) {
+        & (Join-Path $PSScriptRoot 'operations-firebird.ps1') -ServerProcess ([ref]$serverProcess) -ServerDir $serverDir -DurationSeconds $OperationalDurationSeconds
+    }
 } finally {
     try {
         if ($null -ne $serverProcess -and !$serverProcess.HasExited) {

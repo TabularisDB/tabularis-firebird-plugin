@@ -44,7 +44,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Test against portable Firebird ${{ matrix.version }}
         shell: pwsh
-        run: ./tests/live-firebird.ps1 -Version '${{ matrix.version }}'
+        run: ./tests/live-firebird.ps1 -Version '${{ matrix.version }}' -OperationalTests
+      - name: Upload operational measurements
+        uses: actions/upload-artifact@v5
+        with:
+          name: firebird-operations-${{ matrix.version }}
+          path: target/operations/*.json
+          retention-days: 7
       - name: Test individual wire ciphers and plaintext policy
         if: matrix.version == '5'
         shell: pwsh

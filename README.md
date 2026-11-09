@@ -1,10 +1,10 @@
 # Firebird — Tabularis Plugin
 
-Firebird network driver for [Tabularis](https://github.com/TabularisDB/tabularis), built with a locally patched `rsfbclient-rust` wire driver. No Firebird client DLL is required. The stable v0.1.0 is read-only. The **0.2.0-beta.3 prerelease includes writes, interactive transactions, atomic batches, DDL, prepare-only query plans, roles and character sets**; see [DEVELOPMENT.md](DEVELOPMENT.md) for completed work and remaining limitations.
+Firebird network driver for [Tabularis](https://github.com/TabularisDB/tabularis), built with a locally patched `rsfbclient-rust` wire driver. No Firebird client DLL is required. The stable v0.1.0 is read-only. The **0.2.0-beta.4 prerelease includes writes, interactive transactions, atomic batches, DDL, prepare-only query plans, roles and character sets**; see [DEVELOPMENT.md](DEVELOPMENT.md) for completed work and remaining limitations.
 
 Development and future releases are maintained in [TabularisDB/tabularis-firebird-plugin](https://github.com/TabularisDB/tabularis-firebird-plugin).
 
-Download the current [v0.2.0-beta.3 prerelease](https://github.com/TabularisDB/tabularis-firebird-plugin/releases/tag/v0.2.0-beta.3) for the new functionality. Its release notes describe compatibility changes and outstanding validation.
+Download the current [v0.2.0-beta.4 prerelease](https://github.com/TabularisDB/tabularis-firebird-plugin/releases/tag/v0.2.0-beta.4) for the new functionality. Its release notes describe compatibility changes and outstanding validation.
 
 The [Tabularis registry entry](https://registry.tabularis.dev/plugins/firebird) is managed separately from GitHub releases; end-to-end registry install/update/uninstall verification remains on the release checklist. The historical [release v0.1.0](https://github.com/lejyfps/tabularis-firebird-plugin/releases/tag/v0.1.0) remains available from the original repository.
 
@@ -99,11 +99,19 @@ For a repeatable live test on Windows:
 ./tests/live-firebird.ps1 -Version 4
 # Optional if port 13050 is occupied:
 ./tests/live-firebird.ps1 -Port 13051
+# Full process restart, rollback/recovery and 30-second measured load:
+./tests/live-firebird.ps1 -Version 5 -OperationalTests
+# Longer local run (seconds, at most 600):
+./tests/live-firebird.ps1 -Version 5 -OperationalTests -OperationalDurationSeconds 300
 ```
 
 The script downloads the official portable Firebird 3.0.14, 4.0.7 or 5.0.4 ZIP (verifying its pinned SHA-256), creates an isolated fixture database and random local test credentials under the ignored `target/firebird-test` directory, binds to `127.0.0.1`, and runs live catalog/query tests plus a stdio test of the executable. Its `finally` block stops its server and deletes the entire test directory, including the download, extracted server, database, lock files and credentials, on success or failure. It installs no service. It refuses to overwrite a pre-existing test directory. Windows CI runs the same script for all three versions.
 
 Linux x64 CI runs the same live Rust suites with `bash tests/live-firebird.sh 3` (or `4`/`5`), using official Firebird Docker images pinned by digest. This requires Docker, Python 3, OpenSSL and Rust on the Linux runner. The script removes its container, anonymous data volume, temporary credentials and any image it newly pulled. The Windows development PC does not need Docker.
+
+Windows CI also runs the operational checks on Firebird 3/4/5 and uploads JSON measurements from `target/operations/`. These report a bounded workload, not a universal memory or throughput guarantee. The plugin's working set is measured separately from the PowerShell harness. Server restart, database and credential cleanup remain inside the fixture's `finally` block.
+
+After registry publication, `node tests/verify-registry.mjs 0.2.0-beta.3` checks the registry's Ed25519 signature, release identity and all six signed download hashes without modifying an installed plugin. This does not replace native install/update/uninstall testing.
 
 To verify a host checkout containing the companion PSQL patch, install that host's dependencies with its pinned pnpm version and run the following from this plugin repository (Node must be on PATH):
 

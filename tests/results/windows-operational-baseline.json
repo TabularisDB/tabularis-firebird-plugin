@@ -1,0 +1,53 @@
+[
+    {
+        "recorded_utc":  "2026-11-09T23:41:15.0323411Z",
+        "firebird_version":  "3.0.14",
+        "os":  "Microsoft Windows NT 10.0.26300.0",
+        "logical_processors":  16,
+        "server_restart_rollback_and_recovery":  true,
+        "duration_seconds":  30.025,
+        "requests":  397,
+        "rows_per_request":  1000,
+        "payload_characters_per_row":  512,
+        "requests_per_second":  13.222,
+        "latency_p50_ms":  73.787,
+        "latency_p95_ms":  81.971,
+        "rss_first_bytes":  8065024,
+        "rss_last_bytes":  10276864,
+        "rss_peak_bytes":  10326016
+    },
+    {
+        "recorded_utc":  "2026-11-09T23:42:08.0863719Z",
+        "firebird_version":  "4.0.7",
+        "os":  "Microsoft Windows NT 10.0.26300.0",
+        "logical_processors":  16,
+        "server_restart_rollback_and_recovery":  true,
+        "duration_seconds":  30.023,
+        "requests":  251,
+        "rows_per_request":  1000,
+        "payload_characters_per_row":  512,
+        "requests_per_second":  8.36,
+        "latency_p50_ms":  113.986,
+        "latency_p95_ms":  139.94,
+        "rss_first_bytes":  8114176,
+        "rss_last_bytes":  8462336,
+        "rss_peak_bytes":  9965568
+    },
+    {
+        "recorded_utc":  "2026-11-09T23:40:15.2311353Z",
+        "firebird_version":  "5.0.4",
+        "os":  "Microsoft Windows NT 10.0.26300.0",
+        "logical_processors":  16,
+        "server_restart_rollback_and_recovery":  true,
+        "duration_seconds":  30.107,
+        "requests":  269,
+        "rows_per_request":  1000,
+        "payload_characters_per_row":  512,
+        "requests_per_second":  8.935,
+        "latency_p50_ms":  109.693,
+        "latency_p95_ms":  118.772,
+        "rss_first_bytes":  8458240,
+        "rss_last_bytes":  10096640,
+        "rss_peak_bytes":  10260480
+    }
+]

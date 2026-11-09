@@ -1,6 +1,13 @@
-# Firebird driver 0.2.0-beta.3
+# Firebird driver 0.2.0-beta.4
 
-Second published prerelease from [TabularisDB/tabularis-firebird-plugin](https://github.com/TabularisDB/tabularis-firebird-plugin). The beta.2 tag failed its Windows CI gate and was not published; beta.3 includes the receive-cancellation correction. This remains a writable beta; the previously published v0.1.0 is the read-only stable release in the original repository. Existing beta.1 assets and the failed beta.2 tag are unchanged.
+Writable prerelease from [TabularisDB/tabularis-firebird-plugin](https://github.com/TabularisDB/tabularis-firebird-plugin). Earlier release assets and tags remain unchanged; the previously published v0.1.0 is the read-only stable release in the original repository.
+
+## Changes since 0.2.0-beta.3
+
+- Fix Windows cancellation when a TCP write is blocked by a full send buffer. Cancellable sockets use nonblocking reads/writes and bounded WSAPoll readiness waits. Waiting does not add a query deadline or replay bytes after a genuine I/O failure. A regression first establishes stalled send progress, then requires cancellation within two seconds.
+- Add disposable Windows operational tests on Firebird 3/4/5: terminate the complete server with an open transaction, verify the plugin reports failure, restart the server, check rollback and resume work in the same plugin process. All three local versions passed.
+- Record a bounded 30-second workload per engine with 1,000 rows and 512-character payloads per request. CI retains JSON reports for request rate, p50/p95 latency and the plugin working set. Durations up to ten minutes can be requested locally. These measurements are not long-term performance guarantees.
+- Add a dependency-free registry verification script for the Ed25519 JWS, signed release identity and all six signed download hashes. Verification passed for the registry's approved Beta.3 entry; native registry install/update/uninstall testing remains outstanding.
 
 ## Changes since 0.2.0-beta.1
 
@@ -24,12 +31,12 @@ Second published prerelease from [TabularisDB/tabularis-firebird-plugin](https:/
 
 - This beta enables writes. Check transaction boundaries before running statements; explicit earlier commits cannot be undone by a later batch failure. Firebird generator increments are not transactional.
 - Servers with wire encryption disabled require an explicit `wire_crypt` setting of `enabled` or `disabled`. Arc4 can be disabled for modern-only connections. Firebird wire encryption is separate from TLS; embedded mode and TLS configuration are unsupported.
-- Released hosts can break Firebird PSQL bodies. Routine-management menus remain disabled; send complete statements through the RPC interface. The companion host patch is not included in these plugin archives. Native editor/DDL/transaction UX, sustained-load/RSS measurement, blocked-write/backpressure interruption on Windows, full server restart tests and live database validation on Linux ARM64/macOS remain outstanding.
+- Released hosts can break Firebird PSQL bodies. Routine-management menus remain disabled; send complete statements through the RPC interface. The companion host patch is not included in these plugin archives. Native editor/DDL/transaction UX, long-term load/soak validation, server-restart validation outside Windows and live database validation on Linux ARM64/macOS remain outstanding.
 - Dedicated BLOB export/preview, lossless SQL export/import, runtime query analysis, arrays and custom BLOB subtypes are not implemented. Primary-key/identity status changes require explicit SQL.
 - Host query-timeout UI support depends on the registry schema; use the plugin timeout setting or explicit connection parameter. Older hosts that discard a cancelled response can temporarily show stale transaction state. The new state RPC requires a compatible host before it can refresh that indicator.
 - UTF8 is recommended. Firebird applies the chosen connection character set and rejects text it cannot represent; other legacy codecs have not each had a language-specific live roundtrip.
 
-See [DEVELOPMENT.md](https://github.com/TabularisDB/tabularis-firebird-plugin/blob/v0.2.0-beta.3/DEVELOPMENT.md) for the complete checklist and transaction semantics.
+See [DEVELOPMENT.md](https://github.com/TabularisDB/tabularis-firebird-plugin/blob/v0.2.0-beta.4/DEVELOPMENT.md) for the complete checklist and transaction semantics.
 
 ## Validation and packages
 
