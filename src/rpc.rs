@@ -23,7 +23,7 @@ pub fn handle_line(line: &str) -> Value {
 
     match method.as_str() {
         "initialize" => ok_response(id, Value::Null),
-        "ping" => ok_response(id, Value::Null),
+        "ping" => handlers::query::ping(id, &params),
         "test_connection" => handlers::query::test_connection(id, &params),
 
         // Metadata — return empty arrays so the driver loads cleanly.

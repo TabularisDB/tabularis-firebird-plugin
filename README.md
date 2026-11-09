@@ -1,71 +1,86 @@
-# Firebird — Tabularis Plugin
+﻿# Firebird — Tabularis Plugin
 
-Driver plugin for [Tabularis](https://github.com/TabularisDB/tabularis).
-Generated with `@tabularis/create-plugin`.
+Read-only Firebird network driver for [Tabularis](https://github.com/TabularisDB/tabularis), built with `rsfbclient`'s pure Rust wire driver. No Firebird client DLL is required. This is an initial implementation, not a complete driver yet.
 
-## Getting started
+## Build and install
 
-```bash
-just dev-install       # build + install into ~/.local/share/tabularis/plugins/drivers/firebird
+```powershell
+cargo build --locked
+just dev-install
 ```
 
-Then open Tabularis — your driver appears in the connection picker. `test_connection` is stubbed to return success so you can immediately see the plugin wired up.
+Restart Tabularis or toggle the plugin in Settings. Configure:
 
-## What's implemented
+- Host: your Firebird server (`localhost` for a local server).
+- Port: `3050` by default.
+- Database: a database alias or a file path **on the server**, not on the plugin machine.
+- Username and password: an existing Firebird database user. No default password is assumed.
 
-| Method | Status | Notes |
-|--------|--------|-------|
-| `test_connection` | placeholder | returns `{success: true}` unconditionally — replace with a real check before shipping |
-| `ping` | minimal | returns `null`; falls back to `test_connection` if missing |
-| `get_databases`, `get_schemas`, `get_tables`, `get_columns`, `get_indexes`, `get_foreign_keys` | stubs | return `[]` — fill these in to populate the sidebar |
-| `get_views*`, `get_routines*`, `create_view`, `alter_view`, `drop_view` | `-32601` | not implemented — flip `capabilities.views` / `capabilities.routines` once you wire these |
-| `execute_query`, `explain_query` | `-32601` | implement first if you want query execution in the UI |
-| `insert_record`, `update_record`, `delete_record` | `-32601` | implement for row editing support |
-| DDL generators, batch methods | `-32601` | implement as you light up the matching UI features |
+The connection uses UTF-8 and SQL dialect 3. A local Firebird server is supported over TCP; embedded mode and TLS configuration are not implemented. Firebird versions have not yet been validated against a live server.
+
+## Implemented
+
+| Method | Status |
+|---|---|
+| `test_connection`, `ping` | Open a real connection and run `SELECT 1 FROM RDB$DATABASE`; failures return JSON-RPC errors. |
+| `execute_query` | Execute a query in a read-only transaction; return columns, rows, total count and elapsed milliseconds. |
+| Metadata methods | Still scaffold placeholders. The sidebar is not populated yet. |
+| CRUD, DDL, EXPLAIN | Not implemented. The manifest disables editing and table management. |
+
+Each request opens its own connection. `execute_query` accepts optional positive `page` and `page_size` values. Pagination streams the full result to compute `total_count`, retaining only the requested page in memory; large queries can therefore be slow. Without `page_size`, all rows are returned. Use Firebird's `FIRST`/`SKIP` or `ROWS` clauses to bound expensive queries.
+
+Current result limitations:
+
+- An empty result has no column names because the driver's high-level API exposes them through fetched rows.
+- Large integers outside JavaScript's exact integer range, and INT128 values, are returned as decimal strings.
+- The upstream driver converts NUMERIC/DECIMAL to floating point, which can lose precision. Use `CAST(amount AS VARCHAR(100))` when exact digits matter. This must be addressed before financial use.
+- Dates and times use the driver's timestamp representation. Binary BLOBs are JSON byte arrays; text BLOBs are strings.
+- Some newer Firebird types, including DECFLOAT and time-zone types, are unsupported by the upstream reader and return errors.
+
+See the [upstream type mappings](https://docs.rs/rsfbclient/0.29.0/rsfbclient/#data-type-mappings).
+
+## Tests
+
+```powershell
+cargo test --locked
+cargo clippy --all-targets --locked -- -D warnings
+cargo fmt --all -- --check
+```
+
+For the live integration test, create a JSON connection file **outside the repository** with `host`, `port`, `database`, `username`, and `password`. Keep credentials out of source control. Then:
+
+```powershell
+$env:FIREBIRD_TEST_CONFIG = 'C:/path/to/firebird-test.json'
+cargo test --locked live_connection_select_and_read_only_transaction -- --ignored
+```
+
+This checks connectivity, a SELECT result, the transaction's read-only flag and SQL error propagation against an existing database. It does not create a database or test instance.
+
+For a direct JSON-RPC smoke test without a server:
+
+```powershell
+'{"jsonrpc":"2.0","method":"test_connection","params":{"params":{}},"id":1}' | cargo run --quiet --bin firebird-plugin
+```
+
+This must return an invalid-params error rather than success. The generated `just repl` command only echoes request shapes; it does not invoke the driver.
 
 ## Layout
 
-```
-src/
-├── main.rs            thin stdio loop
-├── rpc.rs             method dispatch + response helpers
-├── error.rs           plugin error type
-├── models.rs          ConnectionParams + common shapes
-├── client.rs          connection config (stub — implement your driver here)
-├── handlers/
-│   ├── metadata.rs    databases, schemas, tables, columns, indexes, FKs, views, routines
-│   ├── query.rs       test_connection, ping, execute_query, explain_query
-│   ├── crud.rs        insert_record, update_record, delete_record
-│   └── ddl.rs         CREATE/ALTER/DROP generators
-├── utils/
-│   ├── identifiers.rs quote_identifier(name) + tests
-│   └── pagination.rs  paginate(query, page, size) + tests
-└── bin/
-    └── test_plugin.rs local REPL for simulating Tabularis calls
-```
-
-## Testing without Tabularis
-
-```bash
-just repl
-# > get_tables
-# { "tables": [] }
-```
+- `src/client.rs`: Firebird connection and row conversion.
+- `src/handlers/query.rs`: connection checks, query validation and pagination.
+- `src/models.rs`: connection parameter validation.
+- `src/rpc.rs`: JSON-RPC dispatch.
+- `src/handlers/metadata.rs`, `crud.rs`, `ddl.rs`: remaining scaffold methods.
 
 ## Publishing
 
-Tag a commit `v0.1.0` and push — the included GitHub Actions workflow builds for Linux (x64/arm64), macOS (x64/arm64), and Windows (x64), then attaches the zipped plugin bundles to the release. Submit a PR to `plugins/registry.json` in the Tabularis repo to publish to the in-app registry.
+The included release workflow builds Linux, macOS and Windows bundles when a `v*` tag is pushed. Complete metadata support and live validation before publishing. Submit the released plugin to the Tabularis registry for the [Firebird bounty](https://tabularis.dev/plugins/bounties/firebird).
 
 ## References
 
 - [Plugin guide](https://github.com/TabularisDB/tabularis/blob/main/plugins/PLUGIN_GUIDE.md)
 - [Manifest schema](https://github.com/TabularisDB/tabularis/blob/main/plugins/manifest.schema.json)
-- [Tabularis repo](https://github.com/TabularisDB/tabularis)
 
 ## License
 
 Apache-2.0
-
-## Bounty
-
-Scaffolded for the [Firebird](https://registry.tabularis.dev/requests) request on Tabularis. Publish a release, then submit this repository to the registry: the request ships as soon as the plugin `firebird` is listed.
