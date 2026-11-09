@@ -1,6 +1,6 @@
-# Driver completion (0.2.0-beta.1)
+# Driver completion (0.2.0-beta.2)
 
-The published v0.1.0 tag and registry-signed assets remain unchanged in the original repository. Development and releases continue on `main` in [TabularisDB/tabularis-firebird-plugin](https://github.com/TabularisDB/tabularis-firebird-plugin). This checklist tracks current main and remaining work before stable release. Changes added after v0.2.0-beta.1 do not change that published release or its assets.
+The published v0.1.0 tag and registry-signed assets remain unchanged in the original repository. Development and releases continue on `main` in [TabularisDB/tabularis-firebird-plugin](https://github.com/TabularisDB/tabularis-firebird-plugin). This checklist tracks current main and remaining work before stable release. The earlier v0.2.0-beta.1 release and its assets remain unchanged.
 
 The companion host implementation for PSQL splitting, task cancellation and transaction-state refresh is tracked in [TabularisDB/tabularis#1462](https://github.com/TabularisDB/tabularis/pull/1462). It is a draft pending upstream checks and review; creating it does not make the functionality available in a released host.
 
