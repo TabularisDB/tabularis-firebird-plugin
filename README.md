@@ -150,7 +150,7 @@ Remaining validation:
 Known limits and optional extensions:
 
 - Pagination still scans the full result for an exact count. Buffered results and BLOBs have configurable limits; host cancellation and connect/query deadlines are supported and tested on Firebird 3/4/5. Large-result performance needs further validation.
-- Only UTF-8 / dialect 3 network connections are configurable. Embedded mode, TLS configuration, additional character sets and roles are not exposed. Modern Firebird wire encryption is implemented separately from TLS.
+- Network connections use SQL dialect 3, with UTF-8 by default and configurable character sets and roles in development builds. Embedded mode and TLS configuration remain unsupported. Modern Firebird wire encryption is implemented separately from TLS.
 - Private package routines, arrays and nonstandard BLOB subtypes remain unsupported. Procedure/function name collisions require the returned identity discriminator. Full routine management and native trigger/editor UX still need validation.
 - Dedicated BLOB export/preview RPCs and runtime query analysis are not implemented. Prepare-only execution plans are available in the development branch.
 - Tabularis 0.32 displays a Create View action for the published read-only v0.1.0, which rejects view mutations. The writable development branch implements view mutations.
