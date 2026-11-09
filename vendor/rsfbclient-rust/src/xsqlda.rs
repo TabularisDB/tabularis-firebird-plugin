@@ -4,7 +4,7 @@
 
 use crate::util::*;
 use bytes::{BufMut, Bytes, BytesMut};
-use rsfbclient_core::{ibase, FbError, StmtType};
+use rsfbclient_core::{ibase, Charset, FbError, StmtType};
 use std::{convert::TryFrom, mem, sync::Arc};
 
 use crate::consts;
@@ -129,7 +129,7 @@ impl XSqlVar {
                 self.sqlsubtype = 0;
             }
 
-            ibase::SQL_BLOB if sqlsubtype <= 1 => {
+            ibase::SQL_BLOB if matches!(sqlsubtype, 0 | 1) => {
                 self.sqltype = ibase::SQL_BLOB as i16 + 1;
             }
 
@@ -179,7 +179,12 @@ pub fn xsqlda_to_blr(xsqlda: &[XSqlVar]) -> Result<Bytes, FbError> {
 
             ibase::SQL_TIMESTAMP => blr.put_u8(consts::blr::TIMESTAMP),
 
-            ibase::SQL_BLOB => blr.put_slice(&[consts::blr::QUAD, var.sqlsubtype as u8]),
+            ibase::SQL_BLOB if var.sqlsubtype == 1 => {
+                blr.put_u8(consts::blr::BLOB2);
+                blr.put_i16_le(1);
+                blr.put_u16_le(var.scale as u16 & 0xff);
+            }
+            ibase::SQL_BLOB => blr.put_slice(&[consts::blr::QUAD, 0]),
 
             ibase::SQL_BOOLEAN => blr.put_u8(consts::blr::BOOL),
 
@@ -207,7 +212,11 @@ pub struct PrepareInfo {
 ///
 /// XSqlDa data format: u8 type + optional data preceded by a u16 length.
 /// Returns the statement type, xsqlda and an indicator if the data was truncated (xsqlda not entirely filled)
-pub fn parse_xsqlda(resp: &mut Bytes, xsqlda: &mut Vec<XSqlVar>) -> Result<PrepareInfo, FbError> {
+pub fn parse_xsqlda(
+    resp: &mut Bytes,
+    xsqlda: &mut Vec<XSqlVar>,
+    charset: &Charset,
+) -> Result<PrepareInfo, FbError> {
     // Asserts that the first 7 bytes are the statement type information
     if resp.remaining() < 7 || resp[..3] != [ibase::isc_info_sql_stmt_type as u8, 0x04, 0x00] {
         return err_invalid_xsqlda();
@@ -265,7 +274,7 @@ pub fn parse_xsqlda(resp: &mut Bytes, xsqlda: &mut Vec<XSqlVar>) -> Result<Prepa
         xsqlda.reserve(col_len);
     }
 
-    let truncated = parse_select_items(resp, xsqlda)?;
+    let truncated = parse_select_items(resp, xsqlda, charset)?;
 
     Ok(PrepareInfo {
         stmt_type,
@@ -275,7 +284,11 @@ pub fn parse_xsqlda(resp: &mut Bytes, xsqlda: &mut Vec<XSqlVar>) -> Result<Prepa
 }
 
 /// Fill the xsqlda with data from the cursor, return `true` if the data was truncated (needs more data to fill the xsqlda)
-pub fn parse_select_items(resp: &mut Bytes, xsqlda: &mut Vec<XSqlVar>) -> Result<bool, FbError> {
+pub fn parse_select_items(
+    resp: &mut Bytes,
+    xsqlda: &mut Vec<XSqlVar>,
+    charset: &Charset,
+) -> Result<bool, FbError> {
     if resp.remaining() == 0 {
         return Ok(false);
     }
@@ -367,7 +380,7 @@ pub fn parse_select_items(resp: &mut Bytes, xsqlda: &mut Vec<XSqlVar>) -> Result
                 resp.copy_to_slice(&mut buff)?;
 
                 if let Some(var) = xsqlda.get_mut(col_index) {
-                    var.field_name = String::from_utf8(buff).unwrap_or_default();
+                    var.field_name = charset.decode(buff)?;
                 } else {
                     return err_invalid_xsqlda();
                 }
@@ -380,7 +393,7 @@ pub fn parse_select_items(resp: &mut Bytes, xsqlda: &mut Vec<XSqlVar>) -> Result
                 resp.copy_to_slice(&mut buff)?;
 
                 if let Some(var) = xsqlda.get_mut(col_index) {
-                    var.relation_name = String::from_utf8(buff).unwrap_or_default();
+                    var.relation_name = charset.decode(buff)?;
                 } else {
                     return err_invalid_xsqlda();
                 }
@@ -393,7 +406,7 @@ pub fn parse_select_items(resp: &mut Bytes, xsqlda: &mut Vec<XSqlVar>) -> Result
                 resp.copy_to_slice(&mut buff)?;
 
                 if let Some(var) = xsqlda.get_mut(col_index) {
-                    var.owner_name = String::from_utf8(buff).unwrap_or_default();
+                    var.owner_name = charset.decode(buff)?;
                 } else {
                     return err_invalid_xsqlda();
                 }
@@ -406,7 +419,7 @@ pub fn parse_select_items(resp: &mut Bytes, xsqlda: &mut Vec<XSqlVar>) -> Result
                 resp.copy_to_slice(&mut buff)?;
 
                 if let Some(var) = xsqlda.get_mut(col_index) {
-                    var.alias_name = Arc::from(String::from_utf8(buff).unwrap_or_default());
+                    var.alias_name = Arc::from(charset.decode(buff)?);
                 } else {
                     return err_invalid_xsqlda();
                 }
@@ -442,6 +455,50 @@ fn err_invalid_xsqlda<T>() -> Result<T, FbError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metadata_names_use_the_connection_charset_and_never_silently_disappear() {
+        let mut bytes = BytesMut::new();
+        bytes.put_u8(ibase::isc_info_sql_alias as u8);
+        bytes.put_u16_le(5);
+        bytes.put_slice(b"Gr\xf6\xdfe");
+        bytes.put_u8(ibase::isc_info_end as u8);
+        let mut vars = vec![XSqlVar::default()];
+        parse_select_items(
+            &mut bytes.clone().freeze(),
+            &mut vars,
+            &rsfbclient_core::charset::WIN_1252,
+        )
+        .unwrap();
+        assert_eq!(&*vars[0].alias_name, "Größe");
+        assert!(parse_select_items(
+            &mut bytes.freeze(),
+            &mut vars,
+            &rsfbclient_core::charset::UTF_8
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn text_blob_descriptors_preserve_charset_without_collation() {
+        let mut var = XSqlVar {
+            sqltype: ibase::SQL_BLOB as i16,
+            sqlsubtype: 1,
+            scale: 52 | 0x100,
+            ..Default::default()
+        };
+        var.coerce().unwrap();
+        let blr = xsqlda_to_blr(&[var]).unwrap();
+        assert_eq!(&blr[6..11], &[consts::blr::BLOB2, 1, 0, 52, 0]);
+        for subtype in [-1, 2] {
+            let mut var = XSqlVar {
+                sqltype: ibase::SQL_BLOB as i16,
+                sqlsubtype: subtype,
+                ..Default::default()
+            };
+            assert!(var.coerce().is_err());
+        }
+    }
 
     #[test]
     fn temporal_and_decfloat_types_are_requested_as_text() {

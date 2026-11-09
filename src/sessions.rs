@@ -39,6 +39,8 @@ fn same_attachment(a: &ConnectionParams, b: &ConnectionParams) -> bool {
         && a.password == b.password
         && a.ssl_mode == b.ssl_mode
         && a.wire_options == b.wire_options
+        && a.role == b.role
+        && a.charset == b.charset
 }
 
 pub fn run(
@@ -333,6 +335,12 @@ mod tests {
         assert!(!same_attachment(&connection, &other));
         other = connection.clone();
         other.wire_options.allow_arc4 = !other.wire_options.allow_arc4;
+        assert!(!same_attachment(&connection, &other));
+        other = connection.clone();
+        other.role = Some("READER".into());
+        assert!(!same_attachment(&connection, &other));
+        other = connection.clone();
+        other.charset = "WIN1252";
         assert!(!same_attachment(&connection, &other));
     }
     #[test]

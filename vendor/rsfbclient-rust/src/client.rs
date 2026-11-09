@@ -985,7 +985,7 @@ impl FirebirdWireConnection {
             stmt_type,
             mut param_count,
             mut truncated,
-        } = parse_xsqlda(&mut prepare_data, &mut xsqlda)?;
+        } = parse_xsqlda(&mut prepare_data, &mut xsqlda, &self.charset)?;
 
         while truncated {
             // Get more info on the types
@@ -1008,7 +1008,7 @@ impl FirebirdWireConnection {
 
             let mut data = self.read_response()?.data;
 
-            let parse_resp = parse_xsqlda(&mut data, &mut xsqlda)?;
+            let parse_resp = parse_xsqlda(&mut data, &mut xsqlda, &self.charset)?;
             truncated = parse_resp.truncated;
             param_count = parse_resp.param_count;
         }
@@ -1448,8 +1448,9 @@ impl FirebirdWireConnection {
     pub fn create_blob(
         &mut self,
         tr_handle: &mut TrHandle,
+        bpb: &[u8],
     ) -> Result<(BlobHandle, BlobId), FbError> {
-        self.socket.write_all(&create_blob(tr_handle.0))?;
+        self.socket.write_all(&create_blob(tr_handle.0, bpb))?;
         self.socket.flush()?;
 
         let resp = self.read_response()?;
@@ -1475,8 +1476,10 @@ impl FirebirdWireConnection {
         &mut self,
         tr_handle: &mut TrHandle,
         blob_id: BlobId,
+        bpb: &[u8],
     ) -> Result<BlobHandle, FbError> {
-        self.socket.write_all(&open_blob(tr_handle.0, blob_id.0))?;
+        self.socket
+            .write_all(&open_blob(tr_handle.0, blob_id.0, bpb))?;
         self.socket.flush()?;
 
         let resp = self.read_response()?;

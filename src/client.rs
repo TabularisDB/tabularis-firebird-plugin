@@ -2,8 +2,8 @@
 use crate::control::{self, Control, Deadline};
 use crate::{error::PluginError, models::ConnectionParams};
 use rsfbclient_core::{
-    charset, Dialect, FirebirdClientDbOps, FirebirdClientSqlOps, FreeStmtOp, Row, SqlType,
-    StmtType, TrDataAccessMode, TrIsolationLevel, TrLockResolution, TrOp, TrRecordVersion,
+    Dialect, FirebirdClientDbOps, FirebirdClientSqlOps, FreeStmtOp, Row, SqlType, StmtType,
+    TrDataAccessMode, TrIsolationLevel, TrLockResolution, TrOp, TrRecordVersion,
     TransactionConfiguration,
 };
 use rsfbclient_rust::{DbHandle, RustFbClient, RustFbClientAttachmentConfig, TrHandle};
@@ -69,7 +69,7 @@ impl Client {
             db_name: database.into(),
             user: username.into(),
             pass: password.into(),
-            role_name: None,
+            role_name: params.role.clone(),
         };
         let socket = connect_socket(
             &config.host,
@@ -82,7 +82,7 @@ impl Client {
             .try_clone()
             .map_err(|e| PluginError::internal(e.to_string()))?;
         let mut wire = RustFbClient::from_socket_with_options(
-            charset::UTF_8,
+            crate::limits::charset(params.charset)?,
             socket,
             &config,
             params.wire_options,
@@ -684,6 +684,205 @@ mod tests {
 #[cfg(test)]
 mod integration_tests {
     use super::*;
+
+    #[test]
+    #[ignore = "creates isolated fixture objects and user; run tests/live-firebird.ps1"]
+    fn live_roles_and_mixed_character_sets() {
+        let config: Value = serde_json::from_str(
+            &std::fs::read_to_string(std::env::var("FIREBIRD_TEST_CONFIG").unwrap()).unwrap(),
+        )
+        .unwrap();
+        let connection = ConnectionParams::from_value(&config).unwrap();
+        let mut admin = Client::connect(connection.clone()).unwrap();
+        admin.execute("CREATE TABLE FB_CHARSET_TEST (ID INTEGER PRIMARY KEY, V8 VARCHAR(100) CHARACTER SET UTF8, VW VARCHAR(100) CHARACTER SET WIN1252, B8 BLOB SUB_TYPE TEXT CHARACTER SET UTF8, BW BLOB SUB_TYPE TEXT CHARACTER SET WIN1252, BB BLOB SUB_TYPE BINARY)", vec![], 0, None, None).unwrap();
+        let text = "Grüße café";
+        let long = text.repeat(5000);
+        let binary = vec![0, 0xff, 0x80, 0xc3, 0xa4];
+        for (index, charset) in ["UTF8", "WIN1252", "ISO8859_1"].into_iter().enumerate() {
+            let mut params = connection.clone();
+            params.charset = charset;
+            let mut client = Client::connect(params).unwrap();
+            for (suffix, blob) in [(0, text), (1, long.as_str()), (2, "")] {
+                client
+                    .execute(
+                        "INSERT INTO FB_CHARSET_TEST VALUES (?, ?, ?, ?, ?, ?)",
+                        vec![
+                            SqlType::Integer((index * 10 + suffix) as i64),
+                            SqlType::Text(text.into()),
+                            SqlType::Text(text.into()),
+                            SqlType::Text(blob.into()),
+                            SqlType::Text(blob.into()),
+                            SqlType::Binary(binary.clone()),
+                        ],
+                        0,
+                        None,
+                        None,
+                    )
+                    .unwrap();
+            }
+            let rows = client
+                .query(
+                    "SELECT V8, VW, B8, BW, BB FROM FB_CHARSET_TEST ORDER BY ID",
+                    0,
+                    None,
+                )
+                .unwrap_or_else(|error| panic!("charset {charset}: {error:?}"));
+            for (index, row) in rows["rows"].as_array().unwrap().iter().enumerate() {
+                let blob = match index % 3 {
+                    0 => text,
+                    1 => long.as_str(),
+                    _ => "",
+                };
+                assert_eq!(
+                    *row,
+                    json!([text, text, blob, blob, binary]),
+                    "charset {charset}"
+                );
+            }
+            assert_eq!(
+                client
+                    .query("SELECT 'Grüße' AS \"Größe\" FROM RDB$DATABASE", 0, None)
+                    .unwrap(),
+                json!({"columns":["Größe"],"rows":[["Grüße"]],"total_count":1})
+            );
+            if charset != "UTF8" {
+                for invalid in ["😀".to_string(), "😀".repeat(40000)] {
+                    assert!(client
+                        .execute(
+                            "INSERT INTO FB_CHARSET_TEST (ID, B8) VALUES (999, ?)",
+                            vec![SqlType::Text(invalid)],
+                            0,
+                            None,
+                            None
+                        )
+                        .is_err());
+                }
+                assert_eq!(
+                    client
+                        .query(
+                            "SELECT COUNT(*) FROM FB_CHARSET_TEST WHERE ID = 999",
+                            0,
+                            None
+                        )
+                        .unwrap()["rows"],
+                    json!([[0]])
+                );
+            }
+        }
+        // Unrepresentable text must fail explicitly; it must never be replaced.
+        admin
+            .execute(
+                "INSERT INTO FB_CHARSET_TEST (ID, B8) VALUES (100, ?)",
+                vec![SqlType::Text("東京 😀".into())],
+                0,
+                None,
+                None,
+            )
+            .unwrap();
+        let mut narrow = connection.clone();
+        narrow.charset = "ASCII";
+        let mut narrow_client = Client::connect(narrow).unwrap();
+        assert!(narrow_client
+            .query(
+                "SELECT B8, BW, BB FROM FB_CHARSET_TEST WHERE ID = 100",
+                0,
+                None
+            )
+            .is_err());
+        assert_eq!(
+            narrow_client
+                .query("SELECT 1 FROM RDB$DATABASE", 0, None)
+                .unwrap()["rows"],
+            json!([[1]])
+        );
+        assert_eq!(
+            admin
+                .query(
+                    "SELECT B8, BW, BB FROM FB_CHARSET_TEST WHERE ID = 100",
+                    0,
+                    None
+                )
+                .unwrap()["rows"],
+            json!([["東京 😀", null, null]])
+        );
+        drop(narrow_client);
+
+        let password = format!(
+            "test{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        admin
+            .execute(
+                &format!("CREATE USER FB_PLUGIN_READER PASSWORD '{password}'"),
+                vec![],
+                0,
+                None,
+                None,
+            )
+            .unwrap();
+        admin
+            .execute("CREATE ROLE \"Lésér Mixed\"", vec![], 0, None, None)
+            .unwrap();
+        admin
+            .execute(
+                "GRANT SELECT ON FB_CHARSET_TEST TO ROLE \"Lésér Mixed\"",
+                vec![],
+                0,
+                None,
+                None,
+            )
+            .unwrap();
+        admin
+            .execute(
+                "GRANT \"Lésér Mixed\" TO USER FB_PLUGIN_READER",
+                vec![],
+                0,
+                None,
+                None,
+            )
+            .unwrap();
+        let mut reader = connection.clone();
+        reader.username = Some("FB_PLUGIN_READER".into());
+        reader.password = Some(password);
+        let mut no_role = Client::connect(reader.clone()).unwrap();
+        assert!(no_role
+            .query("SELECT ID FROM FB_CHARSET_TEST", 0, None)
+            .is_err());
+        drop(no_role);
+        reader.role = Some("\"Lésér Mixed\"".into());
+        reader.charset = "WIN1252";
+        let mut role_client = Client::connect(reader).unwrap();
+        assert_eq!(
+            role_client
+                .query("SELECT CURRENT_ROLE FROM RDB$DATABASE", 0, None)
+                .unwrap()["rows"],
+            json!([["Lésér Mixed"]])
+        );
+        assert_eq!(
+            role_client
+                .query("SELECT COUNT(*) FROM FB_CHARSET_TEST", 0, None)
+                .unwrap()["rows"],
+            json!([[10]])
+        );
+        assert!(role_client
+            .execute("DELETE FROM FB_CHARSET_TEST", vec![], 0, None, None)
+            .is_err());
+        drop(role_client);
+        drop(admin);
+        let mut cleanup = Client::connect(connection).unwrap();
+        cleanup
+            .execute("DROP USER FB_PLUGIN_READER", vec![], 0, None, None)
+            .unwrap();
+        cleanup
+            .execute("DROP ROLE \"Lésér Mixed\"", vec![], 0, None, None)
+            .unwrap();
+        cleanup
+            .execute("DROP TABLE FB_CHARSET_TEST", vec![], 0, None, None)
+            .unwrap();
+    }
 
     #[test]
     #[ignore = "requires isolated fixture; run tests/live-firebird.ps1"]

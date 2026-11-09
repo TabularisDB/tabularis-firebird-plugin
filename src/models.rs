@@ -9,6 +9,8 @@ use serde_json::Value;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectionParams {
     pub wire_options: rsfbclient_rust::WireOptions,
+    pub role: Option<String>,
+    pub charset: &'static str,
     pub host: Option<String>,
     pub port: Option<u16>,
     pub database: Option<String>,
@@ -61,6 +63,24 @@ impl ConnectionParams {
                     .filter(|v| !v.is_null())
             })
         };
+        let defaults = crate::limits::connection_defaults();
+        let string_option = |key: &str| -> Result<Option<&str>, PluginError> {
+            option(key)
+                .map(|value| {
+                    value.as_str().ok_or_else(|| {
+                        PluginError::invalid_params(format!("{key} must be a string"))
+                    })
+                })
+                .transpose()
+        };
+        let role = match string_option("role")? {
+            Some(value) => crate::limits::role(value)?,
+            None => defaults.role,
+        };
+        let charset = match string_option("charset")? {
+            Some(value) => crate::limits::charset(value)?.on_firebird,
+            None => defaults.charset,
+        };
         let mut wire_options = crate::limits::current().wire_options;
         if let Some(policy) = option("wire_crypt") {
             wire_options.mode = policy
@@ -92,6 +112,8 @@ impl ConnectionParams {
         }
         Ok(Self {
             wire_options,
+            role,
+            charset,
             host: get_str("host"),
             port,
             database: get_str("database"),
@@ -147,6 +169,10 @@ mod tests {
             json!({"wire_crypt":"optional"}),
             json!({"allow_arc4":"maybe"}),
             json!({"extra":[]}),
+            json!({"role":123}),
+            json!({"extra":{"charset":true}}),
+            json!({"charset":"OCTETS"}),
+            json!({"role":"a\0b"}),
         ] {
             assert!(ConnectionParams::from_value(&value).is_err());
         }
@@ -187,5 +213,35 @@ mod tests {
                 .unwrap();
         assert_eq!(explicit.connect_timeout_secs, 0);
         assert_eq!(explicit.query_timeout_secs, Some(2));
+    }
+
+    #[test]
+    fn resolves_role_and_charset_overrides() {
+        let params = ConnectionParams::from_value(
+            &json!({"extra":{"role":"\"Leser\"","charset":"win-1252"}}),
+        )
+        .unwrap();
+        assert_eq!(params.role.as_deref(), Some("\"Leser\""));
+        assert_eq!(params.charset, "WIN1252");
+        let direct = ConnectionParams::from_value(
+            &json!({"role":"", "charset":"utf-8", "extra":{"role":"IGNORED","charset":"ASCII"}}),
+        )
+        .unwrap();
+        assert_eq!(direct.role, None);
+        assert_eq!(direct.charset, "UTF8");
+        let manifest: Value = serde_json::from_str(include_str!("../.tabularium")).unwrap();
+        let charsets = manifest["settings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|setting| setting["key"] == "charset")
+            .unwrap();
+        for charset in charsets["options"].as_array().unwrap() {
+            let connection = ConnectionParams::from_value(&json!({"charset":charset})).unwrap();
+            assert!(
+                crate::limits::charset(connection.charset).is_ok(),
+                "{charset}"
+            );
+        }
     }
 }

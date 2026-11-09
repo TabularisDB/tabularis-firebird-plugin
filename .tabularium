@@ -39,6 +39,8 @@
     "table_query_templates": true
   },
   "settings": [
+    {"key":"role","label":"SQL role","type":"string","default":"","description":"Optional SQL role. Quote case-sensitive names, for example \"Reader\". Per-connection extra.role overrides this default."},
+    {"key":"charset","label":"Connection character set","type":"select","options":["UTF8","WIN1250","WIN1251","WIN1252","WIN1253","WIN1254","WIN1256","WIN1257","WIN1258","ISO8859_1","ISO8859_2","ISO8859_3","ISO8859_4","ISO8859_5","ISO8859_6","ISO8859_7","ISO8859_13","ASCII","KOI8R","KOI8U","EUCJ_0208","BIG_5"],"default":"UTF8","description":"Strict text encoding; unsupported characters produce an error. Per-connection extra.charset overrides this default. Text BLOB output is converted to UTF-8."},
     {"key":"wire_crypt","label":"Wire encryption","type":"select","options":["required","enabled","disabled"],"default":"required","description":"Required rejects unencrypted connections. Enabled also permits an unencrypted server."},
     {"key":"allow_arc4","label":"Allow Arc4 for Firebird 3 compatibility","type":"boolean","default":true,"description":"ChaCha64 and ChaCha are preferred. Disable to reject servers offering only Arc4."},
     {"key":"query_timeout_secs","label":"Query timeout in seconds (0 = unlimited)","type":"number","default":0},

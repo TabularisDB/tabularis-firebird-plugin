@@ -229,6 +229,12 @@ fn build_dpb(
 ) -> Result<Bytes, FbError> {
     let mut params = Vec::new();
 
+    // Database paths and DPB strings are UTF-8, independently of lc_ctype.
+    params.push(DpbData {
+        tag: ibase::isc_dpb_utf8_filename as u8,
+        data: Cow::Borrowed(&[]),
+    });
+
     if let Some(ps) = page_size {
         params.push(DpbData {
             tag: ibase::isc_dpb_page_size as u8,
@@ -639,10 +645,11 @@ pub fn parse_aux_port(data: &[u8]) -> Result<u16, FbError> {
 }
 
 /// Create blob request
-pub fn create_blob(tr_handle: u32) -> Bytes {
+pub fn create_blob(tr_handle: u32, bpb: &[u8]) -> Bytes {
     let mut req = BytesMut::with_capacity(16);
 
-    req.put_u32(WireOp::CreateBlob as u32);
+    req.put_u32(WireOp::CreateBlob2 as u32);
+    req.put_wire_bytes(bpb);
     req.put_u32(tr_handle);
     req.put_u64(0); // Blob id, but we are creating one!?
 
@@ -650,14 +657,24 @@ pub fn create_blob(tr_handle: u32) -> Bytes {
 }
 
 /// Open blob request
-pub fn open_blob(tr_handle: u32, blob_id: u64) -> Bytes {
+pub fn open_blob(tr_handle: u32, blob_id: u64, bpb: &[u8]) -> Bytes {
     let mut req = BytesMut::with_capacity(16);
 
-    req.put_u32(WireOp::OpenBlob as u32);
+    req.put_u32(WireOp::OpenBlob2 as u32);
+    req.put_wire_bytes(bpb);
     req.put_u32(tr_handle);
     req.put_u64(blob_id);
 
     req.freeze()
+}
+
+/// Text BLOB filter parameters: explicit source/target subtypes and charsets.
+pub fn text_blob_bpb(source_charset: u16, target_charset: u16) -> [u8; 17] {
+    let source = source_charset.to_le_bytes();
+    let target = target_charset.to_le_bytes();
+    [
+        1, 1, 2, 1, 0, 2, 2, 1, 0, 4, 2, source[0], source[1], 5, 2, target[0], target[1],
+    ]
 }
 
 /// Get blob segment request
@@ -932,6 +949,7 @@ impl RowSink for ParsedColumnSink<'_> {
     fn blob(&mut self, var: &XSqlVar, _sqltype: u32, id: BlobId) -> Result<(), FbError> {
         self.out.push(ParsedColumn::Blob {
             binary: var.sqlsubtype == 0,
+            charset: (var.scale as u16) & 0xff,
             id,
             col_name: var.alias_name.clone(),
         });
@@ -1210,6 +1228,8 @@ pub enum ParsedColumn {
     Blob {
         /// True if blob type 0
         binary: bool,
+        /// Low byte of SQLDA scale contains the source charset for text BLOBs.
+        charset: u16,
         /// Blob id
         id: BlobId,
         /// Column name
@@ -1228,12 +1248,18 @@ impl ParsedColumn {
             ParsedColumn::Complete(c) => c,
             ParsedColumn::Blob {
                 binary,
+                charset,
                 id,
                 col_name,
             } => {
                 let mut data = Vec::with_capacity(256);
 
-                let blob_handle = conn.open_blob(tr_handle, id)?;
+                let bpb = text_blob_bpb(charset, 4); // UTF8 JSON output
+                let blob_handle = conn
+                    .open_blob(tr_handle, id, if binary { &[] } else { &bpb })
+                    .map_err(|error| {
+                        FbError::from(format!("Opening BLOB column {col_name}: {error}"))
+                    })?;
 
                 loop {
                     let (mut segment, end) = conn.get_segment(blob_handle)?;
@@ -1261,7 +1287,7 @@ impl ParsedColumn {
                     if binary {
                         SqlType::Binary(data)
                     } else {
-                        SqlType::Text(conn.charset.decode(data)?)
+                        SqlType::Text(rsfbclient_core::charset::UTF_8.decode(data)?)
                     },
                 )
             }
@@ -1551,6 +1577,24 @@ pub fn parse_explain_plan(data: &mut Bytes, charset: &Charset) -> Result<String,
 mod tests {
     use super::*;
     use rsfbclient_core::charset::UTF_8;
+
+    #[test]
+    fn blob_parameter_buffers_are_length_delimited_before_the_handles() {
+        let bpb = text_blob_bpb(52, 4);
+        assert_eq!(bpb, [1, 1, 2, 1, 0, 2, 2, 1, 0, 4, 2, 52, 0, 5, 2, 4, 0]);
+        let mut open = open_blob(42, 123, &bpb);
+        assert_eq!(open.get_u32().unwrap(), WireOp::OpenBlob2 as u32);
+        assert_eq!(open.get_wire_bytes().unwrap().as_ref(), bpb);
+        assert_eq!(open.get_u32().unwrap(), 42);
+        assert_eq!(open.get_u64().unwrap(), 123);
+        assert!(open.is_empty());
+        let mut create = create_blob(42, &[]);
+        assert_eq!(create.get_u32().unwrap(), WireOp::CreateBlob2 as u32);
+        assert!(create.get_wire_bytes().unwrap().is_empty());
+        assert_eq!(create.get_u32().unwrap(), 42);
+        assert_eq!(create.get_u64().unwrap(), 0);
+        assert!(create.is_empty());
+    }
 
     #[test]
     fn protocol16_execution_appends_the_timeout_field() {

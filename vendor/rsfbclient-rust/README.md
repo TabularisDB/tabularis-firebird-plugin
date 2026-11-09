@@ -11,6 +11,7 @@ Local functional changes:
 
 - Caller-owned TCP sockets allow connect deadlines and cancellation during authentication; the plugin aborts its dedicated attachment by shutting down that socket.
 - Configurable decoded BLOB limits and single-row prefetch for BLOB results bound their buffering. Affected-row metadata is exposed after execute2/RETURNING.
+- DPB paths/user/role strings explicitly use UTF-8 independently of the connection character set. SQLDA names decode strictly using the connection character set instead of silently becoming empty names. Text BLOBs use BLOB2 descriptors and explicit source/target character sets when opening; long bound text is a UTF-8 text BLOB instead of an untyped binary BLOB. Binary bytes remain untouched, and custom BLOB subtypes are rejected.
 - Prepared statements expose Firebird 3+ detailed plans through statement information item 26. The 65535-byte response is checked for truncation before decoding.
 
 - `StmtHandleData::column_names()` exposes prepared output names, even for an empty cursor.
@@ -21,5 +22,7 @@ Local functional changes:
 Replace this copy with an upstream release when it exposes statement metadata, exact decimal values and faithful temporal values. No Firebird server/client binaries are included here.
 
 Wire references: [Firebird ChaCha plugin](https://github.com/FirebirdSQL/firebird/blob/master/src/plugins/crypt/chacha/ChaCha.cpp), [server key extraction](https://github.com/FirebirdSQL/firebird/blob/master/src/remote/server/server.cpp), and the [wire protocol](https://firebirdsql.org/file/documentation/html/en/firebirddocs/wireprotocol/firebird-wire-protocol.html).
+
+Text references: [native BLOB2 descriptors](https://github.com/FirebirdSQL/firebird/blob/master/src/remote/client/BlrFromMessage.cpp), [Jaybird BLOB parameter buffers](https://github.com/FirebirdSQL/jaybird/blob/master/src/main/org/firebirdsql/jdbc/FBBlob.java), and [UTF-8 DPB strings](https://github.com/FirebirdSQL/jaybird/blob/master/src/main/org/firebirdsql/gds/ng/wire/version13/V13ParameterConverter.java). Firebird applies the attachment character set before returning text; values outside that character set must produce an error, never replacement characters.
 
 Coercion tests were updated and expanded for fixed-point, DECFLOAT and temporal types. Cargo lint settings recognize upstream's coverage configuration and allow its existing unused internal fields. Source formatting follows the workspace rustfmt settings.
