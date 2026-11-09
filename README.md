@@ -1,10 +1,10 @@
 # Firebird — Tabularis Plugin
 
-Firebird network driver for [Tabularis](https://github.com/TabularisDB/tabularis), built with a locally patched `rsfbclient-rust` wire driver. No Firebird client DLL is required. The stable v0.1.0 is read-only. The **0.2.0-beta.2 prerelease includes writes, interactive transactions, atomic batches, DDL, prepare-only query plans, roles and character sets**; see [DEVELOPMENT.md](DEVELOPMENT.md) for completed work and remaining limitations.
+Firebird network driver for [Tabularis](https://github.com/TabularisDB/tabularis), built with a locally patched `rsfbclient-rust` wire driver. No Firebird client DLL is required. The stable v0.1.0 is read-only. The **0.2.0-beta.3 prerelease includes writes, interactive transactions, atomic batches, DDL, prepare-only query plans, roles and character sets**; see [DEVELOPMENT.md](DEVELOPMENT.md) for completed work and remaining limitations.
 
 Development and future releases are maintained in [TabularisDB/tabularis-firebird-plugin](https://github.com/TabularisDB/tabularis-firebird-plugin).
 
-Download the current [v0.2.0-beta.2 prerelease](https://github.com/TabularisDB/tabularis-firebird-plugin/releases/tag/v0.2.0-beta.2) for the new functionality. Its release notes describe compatibility changes and outstanding validation.
+Download the current [v0.2.0-beta.3 prerelease](https://github.com/TabularisDB/tabularis-firebird-plugin/releases/tag/v0.2.0-beta.3) for the new functionality. Its release notes describe compatibility changes and outstanding validation.
 
 The [Tabularis registry entry](https://registry.tabularis.dev/plugins/firebird) is managed separately from GitHub releases; end-to-end registry install/update/uninstall verification remains on the release checklist. The historical [release v0.1.0](https://github.com/lejyfps/tabularis-firebird-plugin/releases/tag/v0.1.0) remains available from the original repository.
 

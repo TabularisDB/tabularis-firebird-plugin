@@ -8,7 +8,7 @@ use rsfbclient_core::FbError;
 use sha2::{Digest, Sha256};
 use std::{
     io::{self, Read, Write},
-    net::{SocketAddr, TcpStream},
+    net::SocketAddr,
     str::FromStr,
 };
 
@@ -235,7 +235,7 @@ impl<S> CryptStream<S> {
         }
     }
 }
-impl CryptStream<TcpStream> {
+impl CryptStream<crate::socket_io::SocketIo> {
     pub fn peer_addr(&self) -> io::Result<SocketAddr> {
         self.stream.peer_addr()
     }

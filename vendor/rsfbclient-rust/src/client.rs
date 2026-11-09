@@ -6,6 +6,7 @@ use std::{
     env,
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
+    sync::{atomic::AtomicBool, Arc},
 };
 
 use crate::{
@@ -14,6 +15,7 @@ use crate::{
     crypt::{self, CryptStream, WireCrypt, WireOptions},
     events::*,
     raw::RawValue,
+    socket_io::SocketIo,
     srp::*,
     util::*,
     wire::*,
@@ -181,7 +183,7 @@ impl RustFbClient {
         socket: TcpStream,
         config: &RustFbClientAttachmentConfig,
     ) -> Result<Self, FbError> {
-        Self::from_socket_with_options(charset, socket, config, WireOptions::default())
+        Self::from_socket_with_options(charset, socket, config, WireOptions::default(), None)
     }
     pub fn cipher_name(&self) -> Option<&'static str> {
         match &self.conn.as_ref()?.socket {
@@ -194,6 +196,7 @@ impl RustFbClient {
         socket: TcpStream,
         config: &RustFbClientAttachmentConfig,
         options: WireOptions,
+        cancelled: Option<Arc<AtomicBool>>,
     ) -> Result<Self, FbError> {
         let conn = FirebirdWireConnection::from_socket(
             socket,
@@ -202,6 +205,7 @@ impl RustFbClient {
             &config.pass,
             charset.clone(),
             options,
+            cancelled,
         )?;
         Ok(Self {
             conn: Some(conn),
@@ -478,7 +482,15 @@ impl FirebirdWireConnection {
         charset: Charset,
     ) -> Result<Self, FbError> {
         let socket = TcpStream::connect((host, port))?;
-        Self::from_socket(socket, db_name, user, pass, charset, WireOptions::default())
+        Self::from_socket(
+            socket,
+            db_name,
+            user,
+            pass,
+            charset,
+            WireOptions::default(),
+            None,
+        )
     }
 
     fn from_socket(
@@ -488,6 +500,7 @@ impl FirebirdWireConnection {
         pass: &str,
         charset: Charset,
         options: WireOptions,
+        cancelled: Option<Arc<AtomicBool>>,
     ) -> Result<Self, FbError> {
         // The wire protocol is request/response with small writes, so Nagle has
         // nothing to coalesce and every statement waits out a delayed ACK
@@ -506,7 +519,7 @@ impl FirebirdWireConnection {
             .map(|addr| addr.to_string())
             .unwrap_or_default();
 
-        let mut socket = FbStream::Plain(socket);
+        let mut socket = FbStream::Plain(SocketIo::new(socket, cancelled)?);
 
         // Random key for the srp
         let srp_key: [u8; 32] = rand::random();
@@ -1872,10 +1885,10 @@ pub struct BlobId(pub(crate) u64);
 /// Firebird tcp stream, may be encrypted
 enum FbStream {
     /// Plaintext stream
-    Plain(TcpStream),
+    Plain(SocketIo),
 
     /// Arc4 ecrypted stream
-    Encrypted(CryptStream<TcpStream>),
+    Encrypted(CryptStream<SocketIo>),
 }
 
 impl FbStream {

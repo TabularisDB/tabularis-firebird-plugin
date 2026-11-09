@@ -10,7 +10,7 @@ use rsfbclient_rust::{DbHandle, RustFbClient, RustFbClientAttachmentConfig, TrHa
 use serde_json::{json, Value};
 use std::{
     net::{TcpStream, ToSocketAddrs},
-    sync::{mpsc, Arc},
+    sync::{atomic::AtomicBool, mpsc, Arc},
     time::{Duration, Instant},
 };
 
@@ -21,6 +21,7 @@ pub struct Client {
     query_timeout_secs: u32,
     batch_transaction: Option<TrHandle>,
     abort_socket: TcpStream,
+    cancelled: Arc<AtomicBool>,
 }
 impl Client {
     pub fn connect(params: ConnectionParams) -> Result<Self, PluginError> {
@@ -77,7 +78,8 @@ impl Client {
             params.connect_timeout_secs,
             &control,
         )?;
-        control.attach(&socket)?;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        control.attach(&socket, &cancelled)?;
         let abort_socket = socket
             .try_clone()
             .map_err(|e| PluginError::internal(e.to_string()))?;
@@ -86,6 +88,7 @@ impl Client {
             socket,
             &config,
             params.wire_options,
+            Some(cancelled.clone()),
         )
         .map_err(firebird_error)?;
         wire.set_blob_limit(crate::limits::current().blob_bytes);
@@ -101,12 +104,13 @@ impl Client {
                 .unwrap_or(crate::limits::current().query_timeout_secs),
             batch_transaction: None,
             abort_socket,
+            cancelled,
         })
     }
 
     pub fn bind_request(&mut self, params: &ConnectionParams) -> Result<(), PluginError> {
         self.control = control::current();
-        self.control.attach(&self.abort_socket)?;
+        self.control.attach(&self.abort_socket, &self.cancelled)?;
         self.query_timeout_secs = params
             .query_timeout_secs
             .unwrap_or(crate::limits::current().query_timeout_secs);
@@ -471,7 +475,11 @@ impl Client {
 impl Drop for Client {
     fn drop(&mut self) {
         // Cleanup is bounded too, including idle sessions whose request was disarmed.
-        if self.control.attach(&self.abort_socket).is_err() {
+        if self
+            .control
+            .attach(&self.abort_socket, &self.cancelled)
+            .is_err()
+        {
             return;
         }
         let _deadline = Deadline::query(&self.control, 5);

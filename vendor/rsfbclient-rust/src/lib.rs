@@ -7,6 +7,7 @@ mod consts;
 mod crypt;
 mod events;
 mod raw;
+mod socket_io;
 mod srp;
 mod util;
 mod wire;

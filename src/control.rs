@@ -4,7 +4,7 @@ use std::{
     cell::RefCell,
     net::{Shutdown, TcpStream},
     sync::{
-        atomic::{AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
         mpsc, Arc, Mutex,
     },
     thread,
@@ -14,7 +14,7 @@ use std::{
 #[derive(Default)]
 pub struct Control {
     reason: AtomicU8,
-    socket: Mutex<Option<TcpStream>>,
+    socket: Mutex<Option<(TcpStream, Arc<AtomicBool>)>>,
 }
 
 impl Control {
@@ -28,19 +28,26 @@ impl Control {
             .compare_exchange(0, reason, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
         {
-            if let Some(socket) = self.socket.lock().unwrap().as_ref() {
+            if let Some((socket, cancelled)) = self.socket.lock().unwrap().as_ref() {
+                cancelled.store(true, Ordering::SeqCst);
                 let _ = socket.shutdown(Shutdown::Both);
             }
         }
     }
 
-    pub fn attach(&self, socket: &TcpStream) -> Result<(), PluginError> {
-        *self.socket.lock().unwrap() = Some(
+    pub fn attach(
+        &self,
+        socket: &TcpStream,
+        cancelled: &Arc<AtomicBool>,
+    ) -> Result<(), PluginError> {
+        *self.socket.lock().unwrap() = Some((
             socket
                 .try_clone()
                 .map_err(|e| PluginError::internal(e.to_string()))?,
-        );
+            cancelled.clone(),
+        ));
         if self.check().is_err() {
+            cancelled.store(true, Ordering::SeqCst);
             let _ = socket.shutdown(Shutdown::Both);
         }
         self.check()
@@ -138,6 +145,24 @@ impl Drop for Deadline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn late_cancellation_does_not_poison_a_parked_attachments_signal() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let socket = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let _peer = listener.accept().unwrap().0;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let finished = Control::default();
+        finished.attach(&socket, &cancelled).unwrap();
+        finished.detach();
+        finished.cancel();
+        assert!(!cancelled.load(Ordering::SeqCst));
+        let next = Control::default();
+        next.attach(&socket, &cancelled).unwrap();
+        assert!(!cancelled.load(Ordering::SeqCst));
+        next.cancel();
+        assert!(cancelled.load(Ordering::SeqCst));
+    }
+
     #[test]
     fn cancellation_is_sticky_and_does_not_leak_between_requests() {
         let first = Arc::new(Control::default());
