@@ -9,6 +9,12 @@
   "default_port": 3050,
   "default_username": "SYSDBA",
   "executable": "firebird-plugin",
+  "connection_fields": {
+    "database": {
+      "label": "Database path or alias (on the Firebird server)",
+      "placeholder": "C:\\data\\example.fdb or configured server alias"
+    }
+  },
   "capabilities": {
     "schemas": false,
     "views": true,

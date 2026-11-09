@@ -1,14 +1,12 @@
-"""Validate against the registry's live driver schema without publishing anything."""
+"""Validate against the registry driver schema captured on 2026-11-09."""
 import json
 from pathlib import Path
-from urllib.request import urlopen
 
 from jsonschema import Draft202012Validator
 
 root = Path(__file__).resolve().parent.parent
 manifest = json.loads((root / ".tabularium").read_text(encoding="utf-8"))
-with urlopen(manifest["$schema"], timeout=30) as response:
-    schema = json.load(response)
+schema = json.loads((root / "tests/driver-manifest.schema.json").read_text(encoding="utf-8"))
 Draft202012Validator.check_schema(schema)
 Draft202012Validator(schema).validate(manifest)
-print("Manifest matches the live Tabularis registry driver schema.")
+print("Manifest matches the Tabularis registry driver schema (2026-11-09 snapshot).")
