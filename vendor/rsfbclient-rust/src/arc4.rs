@@ -1,10 +1,5 @@
 //! Arc4 stream cipher implementation for the firebird wire encryption (Wire Protocol 13)
 
-use std::{
-    io::{Read, Write},
-    net::{SocketAddr, TcpStream},
-};
-
 #[derive(Clone)]
 pub struct Arc4 {
     i: u8,
@@ -33,7 +28,7 @@ impl Arc4 {
         rc4
     }
 
-    fn next(&mut self) -> u8 {
+    pub(crate) fn next(&mut self) -> u8 {
         self.i = self.i.wrapping_add(1);
         self.j = self.j.wrapping_add(self.state[self.i as usize]);
         self.state.swap(self.i as usize, self.j as usize);
@@ -46,74 +41,6 @@ impl Arc4 {
         for (x, y) in input.iter().zip(output.iter_mut()) {
             *y = *x ^ self.next();
         }
-    }
-}
-
-/// Wraps a stream, encoding / decoding the data
-pub struct Arc4Stream<S> {
-    read_rc4: Box<Arc4>,
-    write_rc4: Box<Arc4>,
-    enc_buf: Box<[u8]>,
-    stream: S,
-}
-
-impl<S> Arc4Stream<S> {
-    pub fn new(stream: S, key: &[u8], buf_len: usize) -> Self {
-        Self {
-            read_rc4: Box::new(Arc4::new(key)),
-            write_rc4: Box::new(Arc4::new(key)),
-            enc_buf: vec![0; buf_len].into_boxed_slice(),
-            stream,
-        }
-    }
-}
-
-impl Arc4Stream<TcpStream> {
-    /// Address of the server the wrapped stream is connected to
-    pub fn peer_addr(&self) -> std::io::Result<SocketAddr> {
-        self.stream.peer_addr()
-    }
-}
-
-impl<S: Read> Read for Arc4Stream<S> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let Self {
-            read_rc4,
-            enc_buf,
-            stream,
-            ..
-        } = self;
-
-        let max_len = buf.len().min(enc_buf.len());
-        // Read to the encrypted buffer
-        let len = stream.read(&mut enc_buf[..max_len])?;
-        // Decrypt
-        read_rc4.process(&enc_buf[..len], &mut buf[..len]);
-
-        Ok(len)
-    }
-}
-
-impl<S: Write> Write for Arc4Stream<S> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let Self {
-            write_rc4,
-            enc_buf,
-            stream,
-            ..
-        } = self;
-
-        let max_len = buf.len().min(enc_buf.len());
-        // Encrypt
-        write_rc4.process(&buf[..max_len], &mut enc_buf[..max_len]);
-        // Write encrypted data
-        let len = stream.write(&enc_buf[..max_len])?;
-
-        Ok(len)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.stream.flush()
     }
 }
 

@@ -18,7 +18,9 @@ Restart Tabularis or toggle the plugin in Settings. Configure:
 - Database: on the **Databases** tab, enter a database alias or a file path **on the Firebird server** in the labeled input. Keep **All databases** selected to browse this configured database. Firebird cannot enumerate all databases on a server.
 - Username and password: an existing Firebird database user. No default password is assumed.
 
-The connection uses UTF-8 and SQL dialect 3. A local Firebird server is supported over TCP; embedded mode and TLS configuration are not implemented. Live integration tests pass against Firebird 3.0.14, 4.0.7 and 5.0.4 on Windows. Other patch versions are not individually validated; the metadata queries require Firebird 3+ catalogs.
+The connection uses UTF-8 and SQL dialect 3. A local Firebird server is supported over TCP; embedded mode and TLS configuration are not implemented. Live integration tests pass against Firebird 3.0.14, 4.0.7 and 5.0.4 on Windows. Other patch versions are not individually validated; the driver requires Firebird 3+ with SRP authentication.
+
+The development branch requires Firebird wire encryption by default, preferring ChaCha64, then ChaCha, with Arc4 allowed for Firebird 3 compatibility. Plugin settings expose `wire_crypt` (`required`, `enabled`, `disabled`) and `allow_arc4` (default true). Disable Arc4 with `required` to require a modern cipher. `enabled` also accepts an unencrypted server; `disabled` explicitly requests plaintext and fails when the server requires encryption. Per-connection RPC options, or `extra: {"wire_crypt":"required","allow_arc4":"false"}`, override plugin defaults. Changing policy while an editor transaction is open is rejected until that session is finished or released. Wire encryption uses Firebird's native protocol; it does not enable the host's TLS settings.
 
 For a local deployment, run a Firebird server on the same PC and connect to `127.0.0.1:3050` with an absolute local database path or an alias from that server's `databases.conf`. For a remote deployment, enter the server's hostname and a path or alias valid on that server, for example `/srv/firebird/customer.fdb` on Linux. The Firebird service account needs access to that file. The plugin does not create databases, install a server, or open `.fdb` files directly. Server firewall and authentication settings must permit the connection; only expose the port to the intended clients.
 
@@ -144,7 +146,7 @@ Remaining validation:
 Known limits and optional extensions:
 
 - Pagination still scans the full result for an exact count. Buffered results and BLOBs have configurable limits; host cancellation and connect/query deadlines are supported and tested on Firebird 3/4/5. Large-result performance needs further validation.
-- Only UTF-8 / dialect 3 network connections are configurable. Embedded mode, TLS configuration, additional character sets and roles are not exposed.
+- Only UTF-8 / dialect 3 network connections are configurable. Embedded mode, TLS configuration, additional character sets and roles are not exposed. Modern Firebird wire encryption is implemented separately from TLS.
 - Private package routines, arrays and nonstandard BLOB subtypes remain unsupported. Procedure/function name collisions require the returned identity discriminator. Full routine management and native trigger/editor UX still need validation.
 - Dedicated BLOB export/preview RPCs and runtime query analysis are not implemented. Prepare-only execution plans are available in the development branch.
 - Tabularis 0.32 displays a Create View action for the published read-only v0.1.0, which rejects view mutations. The writable development branch implements view mutations.

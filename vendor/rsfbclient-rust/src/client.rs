@@ -9,9 +9,9 @@ use std::{
 };
 
 use crate::{
-    arc4::*,
     blr,
     consts::{AuthPluginType, ProtocolVersion, WireOp},
+    crypt::{self, CryptStream, WireCrypt, WireOptions},
     events::*,
     raw::RawValue,
     srp::*,
@@ -181,12 +181,27 @@ impl RustFbClient {
         socket: TcpStream,
         config: &RustFbClientAttachmentConfig,
     ) -> Result<Self, FbError> {
+        Self::from_socket_with_options(charset, socket, config, WireOptions::default())
+    }
+    pub fn cipher_name(&self) -> Option<&'static str> {
+        match &self.conn.as_ref()?.socket {
+            FbStream::Encrypted(stream) => Some(stream.name()),
+            _ => None,
+        }
+    }
+    pub fn from_socket_with_options(
+        charset: Charset,
+        socket: TcpStream,
+        config: &RustFbClientAttachmentConfig,
+        options: WireOptions,
+    ) -> Result<Self, FbError> {
         let conn = FirebirdWireConnection::from_socket(
             socket,
             &config.db_name,
             &config.user,
             &config.pass,
             charset.clone(),
+            options,
         )?;
         Ok(Self {
             conn: Some(conn),
@@ -463,7 +478,7 @@ impl FirebirdWireConnection {
         charset: Charset,
     ) -> Result<Self, FbError> {
         let socket = TcpStream::connect((host, port))?;
-        Self::from_socket(socket, db_name, user, pass, charset)
+        Self::from_socket(socket, db_name, user, pass, charset, WireOptions::default())
     }
 
     fn from_socket(
@@ -472,6 +487,7 @@ impl FirebirdWireConnection {
         user: &str,
         pass: &str,
         charset: Charset,
+        options: WireOptions,
     ) -> Result<Self, FbError> {
         // The wire protocol is request/response with small writes, so Nagle has
         // nothing to coalesce and every statement waits out a delayed ACK
@@ -495,7 +511,14 @@ impl FirebirdWireConnection {
         // Random key for the srp
         let srp_key: [u8; 32] = rand::random();
 
-        let req = connect(db_name, user, &username, &hostname, &srp_key);
+        let req = connect(
+            db_name,
+            user,
+            &username,
+            &hostname,
+            &srp_key,
+            options.mode.code(),
+        );
         socket.write_all(&req)?;
         socket.flush()?;
 
@@ -509,6 +532,9 @@ impl FirebirdWireConnection {
         } = read_with(&mut socket, &mut buff, &mut pending, &mut 0, |resp, _| {
             parse_accept(resp)
         })?;
+        if !matches!(version, ProtocolVersion::V13 | ProtocolVersion::V16) {
+            return Err("This driver requires Firebird 3+ with SRP authentication".into());
+        }
 
         if let Some(auth_plugin) = &mut auth_plugin {
             loop {
@@ -528,6 +554,8 @@ impl FirebirdWireConnection {
                                     user,
                                     pass,
                                     &data,
+                                    &auth_plugin.keys,
+                                    options,
                                 )?;
                             }
 
@@ -569,6 +597,8 @@ impl FirebirdWireConnection {
                                     user,
                                     pass,
                                     &data,
+                                    &auth_plugin.keys,
+                                    options,
                                 )?;
                             }
 
@@ -599,6 +629,9 @@ impl FirebirdWireConnection {
             }
         }
 
+        if options.mode == WireCrypt::Required && matches!(socket, FbStream::Plain(_)) {
+            return Err("Wire encryption is required, but the server did not establish an encrypted SRP connection".into());
+        }
         Ok(Self {
             socket,
             version,
@@ -1048,6 +1081,7 @@ impl FirebirdWireConnection {
             stmt_handle.handle.0,
             &params.blr,
             &params.values,
+            self.version,
         ))?;
         self.socket.flush()?;
 
@@ -1098,6 +1132,7 @@ impl FirebirdWireConnection {
             &params.blr,
             &params.values,
             &stmt_handle.blr,
+            self.version,
         ))?;
         self.socket.flush()?;
 
@@ -1738,6 +1773,8 @@ fn srp_auth<D>(
     user: &str,
     pass: &str,
     data: &SrpAuthData,
+    initial_keys: &[u8],
+    options: WireOptions,
 ) -> Result<FbStream, FbError>
 where
     D: digest::Digest,
@@ -1756,20 +1793,37 @@ where
     ))?;
     socket.flush()?;
 
-    read_response(&mut socket, buff, pending, &mut 0)?;
+    let response = read_response(&mut socket, buff, pending, &mut 0)?;
+
+    if options.mode == WireCrypt::Disabled {
+        return Ok(socket);
+    }
+    let mut offers = initial_keys.to_vec();
+    offers.extend_from_slice(&response.data);
+    let selected = crypt::select(&offers, options.allow_arc4)?;
+    let Some(selected) = selected else {
+        if options.mode == WireCrypt::Enabled && offers.is_empty() {
+            return Ok(socket);
+        }
+        return Err("Server offered no acceptable wire cipher (ChaCha64/ChaCha, or explicitly allowed Arc4)".into());
+    };
+    if !pending.is_empty() {
+        return Err("Unexpected data before enabling wire encryption".into());
+    }
 
     // Enable wire encryption
-    socket.write_all(&crypt("Arc4", "Symmetric"))?;
+    socket.write_all(&crypt(selected.name, "Symmetric"))?;
     socket.flush()?;
 
-    socket = FbStream::Arc4(Arc4Stream::new(
+    socket = FbStream::Encrypted(CryptStream::new(
         match socket {
             FbStream::Plain(s) => s,
             _ => unreachable!("Stream was already encrypted!"),
         },
+        &selected,
         &verifier.get_key(),
         buff.len(),
-    ));
+    )?);
 
     read_response(&mut socket, buff, pending, &mut 0)?;
 
@@ -1818,7 +1872,7 @@ enum FbStream {
     Plain(TcpStream),
 
     /// Arc4 ecrypted stream
-    Arc4(Arc4Stream<TcpStream>),
+    Encrypted(CryptStream<TcpStream>),
 }
 
 impl FbStream {
@@ -1826,7 +1880,7 @@ impl FbStream {
     fn peer_addr(&self) -> std::io::Result<SocketAddr> {
         match self {
             FbStream::Plain(s) => s.peer_addr(),
-            FbStream::Arc4(s) => s.peer_addr(),
+            FbStream::Encrypted(s) => s.peer_addr(),
         }
     }
 }
@@ -1835,7 +1889,7 @@ impl Read for FbStream {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         match self {
             FbStream::Plain(s) => s.read(buf),
-            FbStream::Arc4(s) => s.read(buf),
+            FbStream::Encrypted(s) => s.read(buf),
         }
     }
 }
@@ -1844,14 +1898,14 @@ impl Write for FbStream {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         match self {
             FbStream::Plain(s) => s.write(buf),
-            FbStream::Arc4(s) => s.write(buf),
+            FbStream::Encrypted(s) => s.write(buf),
         }
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
         match self {
             FbStream::Plain(s) => s.flush(),
-            FbStream::Arc4(s) => s.flush(),
+            FbStream::Encrypted(s) => s.flush(),
         }
     }
 }

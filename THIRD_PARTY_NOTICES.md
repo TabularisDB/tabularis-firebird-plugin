@@ -24,3 +24,14 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## RustCrypto
+
+This distribution uses chacha20 0.10.2 from
+https://github.com/RustCrypto/stream-ciphers and RustCrypto cipher support
+crates listed in Cargo.lock.
+
+Copyright (c) 2019-2026 The RustCrypto Project Developers.
+
+These crates are dual licensed under Apache-2.0 or MIT. This distribution
+uses the Apache-2.0 option; the license text is included in LICENSE.

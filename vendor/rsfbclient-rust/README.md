@@ -6,6 +6,9 @@ License: MIT (see LICENSE).
 
 Local functional changes:
 
+- ChaCha64 and ChaCha use RustCrypto chacha20 0.10.2, with SHA-256 key derivation and server IV/counter handling matching Firebird's native plugin. Protocol 16 adds cipher-specific data and execution timeout fields; protocol 13 remains for Firebird 3/Arc4. The fork targets Firebird 3+ and removes protocol 10–12 / legacy password fallback, including the unused pwhash dependency.
+- A shared cipher stream handles short/interrupted writes and rejects reuse after a partial write failure. Tests exercise all three ciphers and ChaCha64's carry beyond the 32-bit block counter. WireCrypt policy and the Arc4 allow-list are explicit; the plugin defaults to required encryption.
+
 - Caller-owned TCP sockets allow connect deadlines and cancellation during authentication; the plugin aborts its dedicated attachment by shutting down that socket.
 - Configurable decoded BLOB limits and single-row prefetch for BLOB results bound their buffering. Affected-row metadata is exposed after execute2/RETURNING.
 - Prepared statements expose Firebird 3+ detailed plans through statement information item 26. The 65535-byte response is checked for truncation before decoding.
@@ -16,5 +19,7 @@ Local functional changes:
 - DATE/TIME/TIMESTAMP, with or without time zone, are requested as VARCHAR(128), preserving their original kind, fractional seconds and zone. SQLDA codes missing from the upstream core bindings are defined locally with a reference to Firebird's public header.
 
 Replace this copy with an upstream release when it exposes statement metadata, exact decimal values and faithful temporal values. No Firebird server/client binaries are included here.
+
+Wire references: [Firebird ChaCha plugin](https://github.com/FirebirdSQL/firebird/blob/master/src/plugins/crypt/chacha/ChaCha.cpp), [server key extraction](https://github.com/FirebirdSQL/firebird/blob/master/src/remote/server/server.cpp), and the [wire protocol](https://firebirdsql.org/file/documentation/html/en/firebirddocs/wireprotocol/firebird-wire-protocol.html).
 
 Coercion tests were updated and expanded for fixed-point, DECFLOAT and temporal types. Cargo lint settings recognize upstream's coverage configuration and allow its existing unused internal fields. Source formatting follows the workspace rustfmt settings.

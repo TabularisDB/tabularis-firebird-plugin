@@ -8,6 +8,7 @@ use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectionParams {
+    pub wire_options: rsfbclient_rust::WireOptions,
     pub host: Option<String>,
     pub port: Option<u16>,
     pub database: Option<String>,
@@ -48,12 +49,49 @@ impl ConnectionParams {
             .and_then(Value::as_u64)
             .and_then(|p| u16::try_from(p).ok());
 
+        let extra = match value.get("extra") {
+            None | Some(Value::Null) => None,
+            Some(Value::Object(extra)) => Some(extra),
+            _ => return Err(PluginError::invalid_params("extra must be an object")),
+        };
+        let option = |key: &str| {
+            value.get(key).filter(|v| !v.is_null()).or_else(|| {
+                extra
+                    .and_then(|extra| extra.get(key))
+                    .filter(|v| !v.is_null())
+            })
+        };
+        let mut wire_options = crate::limits::current().wire_options;
+        if let Some(policy) = option("wire_crypt") {
+            wire_options.mode = policy
+                .as_str()
+                .ok_or_else(|| PluginError::invalid_params("wire_crypt must be a string"))?
+                .parse()
+                .map_err(|error: rsfbclient_core::FbError| {
+                    PluginError::invalid_params(error.to_string())
+                })?;
+        }
+        if let Some(allow) = option("allow_arc4") {
+            wire_options.allow_arc4 = match allow {
+                Value::Bool(value) => *value,
+                Value::String(value) => value
+                    .parse()
+                    .map_err(|_| PluginError::invalid_params("allow_arc4 must be true or false"))?,
+                _ => {
+                    return Err(PluginError::invalid_params(
+                        "allow_arc4 must be true or false",
+                    ))
+                }
+            };
+        }
+
         if value.get("port").is_some_and(|v| !v.is_null()) && !port.is_some_and(|p| p > 0) {
             return Err(PluginError::invalid_params(
                 "port must be an integer between 1 and 65535",
             ));
         }
         Ok(Self {
+            wire_options,
             host: get_str("host"),
             port,
             database: get_str("database"),
@@ -106,6 +144,9 @@ mod tests {
             json!({"connect_timeout_secs": -1}),
             json!({"query_timeout_secs": "1"}),
             json!({"query_timeout_secs": 4294967296u64}),
+            json!({"wire_crypt":"optional"}),
+            json!({"allow_arc4":"maybe"}),
+            json!({"extra":[]}),
         ] {
             assert!(ConnectionParams::from_value(&value).is_err());
         }
@@ -128,6 +169,19 @@ mod tests {
         let defaults = ConnectionParams::from_value(&json!({})).unwrap();
         assert_eq!(defaults.connect_timeout_secs, 10);
         assert_eq!(defaults.query_timeout_secs, None);
+        assert_eq!(
+            defaults.wire_options.mode,
+            rsfbclient_rust::WireCrypt::Required
+        );
+        let override_options = ConnectionParams::from_value(
+            &json!({"extra":{"wire_crypt":"enabled","allow_arc4":"false"}}),
+        )
+        .unwrap();
+        assert_eq!(
+            override_options.wire_options.mode,
+            rsfbclient_rust::WireCrypt::Enabled
+        );
+        assert!(!override_options.wire_options.allow_arc4);
         let explicit =
             ConnectionParams::from_value(&json!({"connect_timeout_secs":0,"query_timeout_secs":2}))
                 .unwrap();

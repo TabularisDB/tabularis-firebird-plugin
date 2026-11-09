@@ -36,6 +36,8 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - run: cargo build --release --locked --bin firebird-plugin --target ${{ matrix.target }}
+      - name: Run native workspace and protocol tests
+        run: cargo test --workspace --locked --target ${{ matrix.target }}
       - name: Package and test extracted driver
         shell: pwsh
         run: ./tests/package.ps1 -Target '${{ matrix.target }}' -Platform '${{ matrix.platform }}'

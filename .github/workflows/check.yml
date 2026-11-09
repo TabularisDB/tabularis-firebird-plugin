@@ -33,3 +33,11 @@ jobs:
       - name: Test against portable Firebird ${{ matrix.version }}
         shell: pwsh
         run: ./tests/live-firebird.ps1 -Version '${{ matrix.version }}'
+      - name: Test individual wire ciphers and plaintext policy
+        if: matrix.version == '5'
+        shell: pwsh
+        run: |
+          foreach ($cipher in @('ChaCha64','ChaCha','Arc4','Disabled')) {
+            ./tests/live-firebird.ps1 -Version 5 -ServerWireCrypt $cipher
+            if (!$?) { throw "Wire cipher test failed: $cipher" }
+          }

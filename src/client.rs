@@ -81,8 +81,13 @@ impl Client {
         let abort_socket = socket
             .try_clone()
             .map_err(|e| PluginError::internal(e.to_string()))?;
-        let mut wire =
-            RustFbClient::from_socket(charset::UTF_8, socket, &config).map_err(firebird_error)?;
+        let mut wire = RustFbClient::from_socket_with_options(
+            charset::UTF_8,
+            socket,
+            &config,
+            params.wire_options,
+        )
+        .map_err(firebird_error)?;
         wire.set_blob_limit(crate::limits::current().blob_bytes);
         let database = wire
             .attach_database(&config, Dialect::D3, false)
@@ -607,6 +612,7 @@ mod tests {
     #[test]
     fn limits_buffered_rows_and_bytes_without_returning_partial_results() {
         let bounds = crate::limits::Limits {
+            wire_options: crate::limits::Limits::default().wire_options,
             query_timeout_secs: 0,
             rows: 1,
             bytes: 1024,
@@ -678,6 +684,60 @@ mod tests {
 #[cfg(test)]
 mod integration_tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires isolated fixture; run tests/live-firebird.ps1"]
+    fn live_wire_encryption_policies_and_cipher_selection() {
+        use rsfbclient_rust::WireCrypt;
+        let config: Value = serde_json::from_str(
+            &std::fs::read_to_string(std::env::var("FIREBIRD_TEST_CONFIG").unwrap()).unwrap(),
+        )
+        .unwrap();
+        let connection = ConnectionParams::from_value(&config).unwrap();
+        let mut client = Client::connect(connection.clone()).unwrap();
+        client.test_connection().unwrap();
+        let cipher = client.wire.cipher_name();
+        let expected = std::env::var("FIREBIRD_TEST_CIPHER").ok();
+        if let Some(expected) = expected.as_deref() {
+            assert_eq!(
+                cipher,
+                if expected == "Disabled" {
+                    None
+                } else {
+                    Some(expected)
+                }
+            );
+        }
+        let mut required = connection.clone();
+        required.wire_options.mode = WireCrypt::Required;
+        let mut enabled = connection.clone();
+        enabled.wire_options.mode = WireCrypt::Enabled;
+        let mut disabled = connection.clone();
+        disabled.wire_options.mode = WireCrypt::Disabled;
+        let mut modern = required.clone();
+        modern.wire_options.allow_arc4 = false;
+        if cipher.is_none() {
+            assert!(Client::connect(required).is_err());
+            assert!(Client::connect(modern).is_err());
+            let mut plain = Client::connect(enabled).unwrap();
+            plain.test_connection().unwrap();
+            assert!(plain.wire.cipher_name().is_none());
+        } else {
+            Client::connect(required)
+                .unwrap()
+                .test_connection()
+                .unwrap();
+            Client::connect(enabled).unwrap().test_connection().unwrap();
+            assert!(Client::connect(disabled).is_err());
+            if cipher == Some("Arc4") {
+                assert!(Client::connect(modern).is_err());
+            } else {
+                let mut modern = Client::connect(modern).unwrap();
+                modern.test_connection().unwrap();
+                assert_eq!(modern.wire.cipher_name(), cipher);
+            }
+        }
+    }
 
     #[test]
     #[ignore = "requires FIREBIRD_TEST_CONFIG; run tests/live-firebird.ps1"]

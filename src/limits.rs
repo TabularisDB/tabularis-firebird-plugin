@@ -1,9 +1,11 @@
 use crate::error::PluginError;
+use rsfbclient_rust::{WireCrypt, WireOptions};
 use serde_json::Value;
 use std::sync::{OnceLock, RwLock};
 
 #[derive(Clone, Copy)]
 pub struct Limits {
+    pub wire_options: WireOptions,
     pub query_timeout_secs: u32,
     pub rows: usize,
     pub bytes: usize,
@@ -13,6 +15,10 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
+            wire_options: WireOptions {
+                mode: WireCrypt::Required,
+                allow_arc4: true,
+            },
             query_timeout_secs: 0,
             rows: 100_000,
             bytes: 64 * 1024 * 1024,
@@ -54,6 +60,22 @@ fn parse(settings: &Value) -> Result<Limits, PluginError> {
         }
     };
     Ok(Limits {
+        wire_options: WireOptions {
+            mode: match settings.get("wire_crypt").filter(|v| !v.is_null()) {
+                None => WireCrypt::Required,
+                Some(Value::String(value)) => {
+                    value.parse().map_err(|error: rsfbclient_core::FbError| {
+                        PluginError::invalid_params(error.to_string())
+                    })?
+                }
+                _ => return Err(PluginError::invalid_params("wire_crypt must be a string")),
+            },
+            allow_arc4: match settings.get("allow_arc4").filter(|v| !v.is_null()) {
+                None => true,
+                Some(Value::Bool(value)) => *value,
+                _ => return Err(PluginError::invalid_params("allow_arc4 must be boolean")),
+            },
+        },
         query_timeout_secs: match settings.get("query_timeout_secs").filter(|v| !v.is_null()) {
             None => 0,
             Some(value) => value
@@ -88,6 +110,8 @@ mod tests {
             json!({"max_result_rows":0}),
             json!({"max_result_mib":1025}),
             json!({"max_blob_mib":"8"}),
+            json!({"wire_crypt":"optional"}),
+            json!({"allow_arc4":"false"}),
         ] {
             assert!(parse(&invalid).is_err());
         }

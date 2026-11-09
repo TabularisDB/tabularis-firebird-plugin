@@ -2,6 +2,7 @@
 param(
     [ValidateSet('3', '4', '5')][string]$Version = '5',
     [ValidateRange(1024, 65535)][int]$Port = 13050,
+    [ValidateSet('Default','ChaCha64','ChaCha','Arc4','Disabled')][string]$ServerWireCrypt = 'Default',
     [scriptblock]$AfterTests
 )
 $ErrorActionPreference = 'Stop'
@@ -18,7 +19,7 @@ $serverProcess = $null
 $ownsTestDir = $false
 $testDir = [IO.Path]::GetFullPath((Join-Path $repoRoot 'target/firebird-test'))
 $savedEnvironment = @{}
-foreach ($key in @('FIREBIRD_LOCK', 'FIREBIRD_TEST_CONFIG', 'ISC_USER', 'ISC_PASSWORD')) {
+foreach ($key in @('FIREBIRD_LOCK', 'FIREBIRD_TEST_CONFIG', 'FIREBIRD_TEST_CIPHER', 'ISC_USER', 'ISC_PASSWORD')) {
     $savedEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
 }
 try {
@@ -46,13 +47,22 @@ RemoteBindAddress = 127.0.0.1
 RemoteServicePort = $Port
 IpcName = tabularis_test_$Port
 "@ | Add-Content -LiteralPath (Join-Path $serverDir 'firebird.conf')
+    $env:FIREBIRD_TEST_CIPHER = if ($ServerWireCrypt -eq 'Default') { $null } else { $ServerWireCrypt }
+    if ($ServerWireCrypt -eq 'Disabled') {
+        'WireCrypt = Disabled' | Add-Content -LiteralPath (Join-Path $serverDir 'firebird.conf')
+    } else {
+        'WireCrypt = Required' | Add-Content -LiteralPath (Join-Path $serverDir 'firebird.conf')
+        if ($ServerWireCrypt -ne 'Default') { "WireCryptPlugin = $ServerWireCrypt" | Add-Content -LiteralPath (Join-Path $serverDir 'firebird.conf') }
+    }
     $databasePath = Join-Path $runDir 'plugin-test.fdb'
     $testPassword = [Guid]::NewGuid().ToString('N')
     $sql = "CREATE DATABASE '$databasePath' USER 'SYSDBA' DEFAULT CHARACTER SET UTF8;`nCREATE OR ALTER USER SYSDBA PASSWORD '$testPassword';`nCOMMIT;`nQUIT;"
     $sql | & (Join-Path $serverDir 'isql.exe') -bail -quiet
     if ($LASTEXITCODE -ne 0) { throw 'Firebird database bootstrap failed' }
     $env:FIREBIRD_TEST_CONFIG = Join-Path $runDir 'connection.json'
-    @{ host = '127.0.0.1'; port = $Port; database = $databasePath; username = 'SYSDBA'; password = $testPassword } |
+    $connection = @{ host = '127.0.0.1'; port = $Port; database = $databasePath; username = 'SYSDBA'; password = $testPassword }
+    if ($ServerWireCrypt -eq 'Disabled') { $connection.wire_crypt = 'disabled' }
+    $connection |
         ConvertTo-Json | Set-Content -Encoding ascii -LiteralPath $env:FIREBIRD_TEST_CONFIG
     $serverProcess = Start-Process -FilePath (Join-Path $serverDir 'firebird.exe') -ArgumentList '-a' -WorkingDirectory $serverDir -WindowStyle Hidden -PassThru
     $ready = $false
@@ -92,7 +102,7 @@ IpcName = tabularis_test_$Port
         $response.result.rows[0][0] -ne 'beta') {
         throw 'Plugin stdio integration test failed'
     }
-    Write-Host "Firebird $($package.Version) integration tests passed."
+    Write-Host "Firebird $($package.Version) integration tests passed (server wire encryption: $ServerWireCrypt)."
     # Optional host verification shares the fixture lifetime and still gets finally cleanup.
     if ($AfterTests) { & $AfterTests }
 } finally {

@@ -7,10 +7,8 @@ use num_enum::TryFromPrimitive;
 #[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq, TryFromPrimitive)]
 #[repr(u32)]
 pub enum ProtocolVersion {
-    V10 = 0x0000000A,
-    V11 = 0xFFFF800B,
-    V12 = 0xFFFF800C,
     V13 = 0xFFFF800D,
+    V16 = 0xFFFF8010,
 }
 
 #[derive(Debug, TryFromPrimitive)]

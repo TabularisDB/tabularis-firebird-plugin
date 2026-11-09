@@ -19,13 +19,18 @@ use rsfbclient_core::{ibase, Charset, Column, Dialect, FbError, FreeStmtOp, SqlT
 pub const BUFFER_LENGTH: u32 = 1024;
 
 /// Connection request
-pub fn connect(db_name: &str, user: &str, username: &str, hostname: &str, srp_key: &[u8]) -> Bytes {
+pub fn connect(
+    db_name: &str,
+    user: &str,
+    username: &str,
+    hostname: &str,
+    srp_key: &[u8],
+    wire_crypt: u32,
+) -> Bytes {
     let protocols = [
         // PROTOCOL_VERSION, Arch type (Generic=1), min, max, weight
-        [ProtocolVersion::V10 as u32, 1, 0, 5, 2],
-        [ProtocolVersion::V11 as u32, 1, 0, 5, 4],
-        [ProtocolVersion::V12 as u32, 1, 0, 5, 6],
         [ProtocolVersion::V13 as u32, 1, 0, 5, 8],
+        [ProtocolVersion::V16 as u32, 1, 0, 5, 10],
     ];
 
     let mut connect = BytesMut::with_capacity(256);
@@ -75,11 +80,11 @@ pub fn connect(db_name: &str, user: &str, username: &str, hostname: &str, srp_ke
             uid.put(pk_chunk);
         }
 
-        let wire_crypt = "\x01\x00\x00\x00";
+        let wire_crypt = wire_crypt.to_le_bytes();
 
         uid.put_u8(Cnct::ClientCrypt as u8);
         uid.put_u8(wire_crypt.len() as u8);
-        uid.put(wire_crypt.as_bytes());
+        uid.put(&wire_crypt[..]);
 
         // System username
         uid.put_u8(Cnct::User as u8);
@@ -263,27 +268,7 @@ fn build_dpb(
     }
 
     match protocol {
-        // Plaintext password
-        ProtocolVersion::V10 => {
-            params.push(DpbData {
-                tag: ibase::isc_dpb_password as u8,
-                data: pass.as_bytes().to_vec().into(),
-            });
-        }
-
-        // Hashed password
-        ProtocolVersion::V11 | ProtocolVersion::V12 => {
-            #[allow(deprecated)]
-            let enc_pass = pwhash::unix_crypt::hash_with("9z", pass).unwrap();
-            let enc_pass = &enc_pass[2..];
-
-            params.push(DpbData {
-                tag: ibase::isc_dpb_password_enc as u8,
-                data: enc_pass.as_bytes().to_vec().into(),
-            });
-        }
-
-        ProtocolVersion::V13
+        ProtocolVersion::V13 | ProtocolVersion::V16
             if let Some(auth) = auth_plugin
                 && let Some(auth_data) = &auth.data =>
         {
@@ -322,7 +307,7 @@ fn build_dpb(
         }
 
         // Password already verified
-        ProtocolVersion::V13 => {}
+        ProtocolVersion::V13 | ProtocolVersion::V16 => {}
     }
 
     Ok(dpb(&params))
@@ -491,7 +476,13 @@ pub fn free_statement(stmt_handle: u32, op: FreeStmtOp) -> Bytes {
 }
 
 /// Execute prepared statement request.
-pub fn execute(tr_handle: u32, stmt_handle: u32, input_blr: &[u8], input_data: &[u8]) -> Bytes {
+pub fn execute(
+    tr_handle: u32,
+    stmt_handle: u32,
+    input_blr: &[u8],
+    input_data: &[u8],
+    version: ProtocolVersion,
+) -> Bytes {
     let mut req = BytesMut::with_capacity(36 + input_blr.len() + input_data.len());
 
     req.put_u32(WireOp::Execute as u32);
@@ -503,6 +494,9 @@ pub fn execute(tr_handle: u32, stmt_handle: u32, input_blr: &[u8], input_data: &
     req.put_u32(if input_blr.is_empty() { 0 } else { 1 });
 
     req.put_slice(input_data);
+    if version >= ProtocolVersion::V16 {
+        req.put_u32(0);
+    } // Statement timeout: use the attachment default.
 
     req.freeze()
 }
@@ -514,6 +508,7 @@ pub fn execute2(
     input_blr: &[u8],
     input_data: &[u8],
     output_blr: &[u8],
+    version: ProtocolVersion,
 ) -> Bytes {
     let mut req =
         BytesMut::with_capacity(40 + input_blr.len() + input_data.len() + output_blr.len());
@@ -530,6 +525,9 @@ pub fn execute2(
 
     req.put_wire_bytes(output_blr);
     req.put_u32(0); // Output message number
+    if version >= ProtocolVersion::V16 {
+        req.put_u32(0);
+    }
 
     req.freeze()
 }
@@ -1390,8 +1388,9 @@ pub fn parse_accept(resp: &mut Bytes) -> Result<ConnectionResponse, FbError> {
 
     let continue_auth = op_code == WireOp::CondAccept as u32;
 
-    let version =
-        ProtocolVersion::try_from(resp.get_u32()?).map_err(|e| FbError::Other(e.to_string()))?;
+    let version = ProtocolVersion::try_from(resp.get_u32()?).map_err(|_| {
+        FbError::from("Unsupported wire protocol; Firebird 3+ with SRP authentication is required")
+    })?;
     resp.get_u32()?; // Arch
     resp.get_u32()?; // Type
 
@@ -1552,6 +1551,16 @@ pub fn parse_explain_plan(data: &mut Bytes, charset: &Charset) -> Result<String,
 mod tests {
     use super::*;
     use rsfbclient_core::charset::UTF_8;
+
+    #[test]
+    fn protocol16_execution_appends_the_timeout_field() {
+        let old = execute(1, 2, &[], &[], ProtocolVersion::V13);
+        let new = execute(1, 2, &[], &[], ProtocolVersion::V16);
+        assert_eq!(new, [&old[..], &[0; 4]].concat());
+        let old = execute2(1, 2, &[], &[], &[], ProtocolVersion::V13);
+        let new = execute2(1, 2, &[], &[], &[], ProtocolVersion::V16);
+        assert_eq!(new, [&old[..], &[0; 4]].concat());
+    }
 
     #[test]
     fn explain_plan_rejects_truncation_and_invalid_framing() {
