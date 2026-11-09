@@ -34,6 +34,9 @@ pub fn ping(id: Value, params: &Value) -> Value {
         })(),
     )
 }
+pub fn release_session(id: Value, params: &Value) -> Value {
+    respond(id, crate::sessions::release(params))
+}
 pub fn execute_query(id: Value, params: &Value) -> Value {
     respond(
         id,
@@ -45,13 +48,13 @@ pub fn execute_query(id: Value, params: &Value) -> Value {
                 .filter(|s| !s.trim().is_empty())
                 .ok_or_else(|| PluginError::invalid_params("query must be a non-empty string"))?;
             let (offset, limit) = pagination(params)?;
+            let session_id = crate::sessions::id(params)?;
             let connection = ConnectionParams::from_value(inner_params(params))?;
             let query = crate::utils::sql::unqualify_console_query(
                 query,
                 connection.database.as_deref().unwrap_or_default(),
             );
             let query = crate::utils::sql::firebird_query(&query)?;
-            let mut client = Client::connect(connection)?;
             let values = match params.get("values") {
                 None | Some(Value::Null) => vec![],
                 Some(Value::Array(values)) => values
@@ -60,17 +63,36 @@ pub fn execute_query(id: Value, params: &Value) -> Value {
                     .collect::<Result<Vec<_>, _>>()?,
                 _ => return Err(PluginError::invalid_params("values must be an array")),
             };
-            let mut result = client.execute(&query, values, offset, limit, None)?;
-            result["pagination"] = match limit {
-                Some(size) => json!({
-                    "page": offset / size + 1, "page_size": size,
-                    "total_rows": result["total_count"],
-                    "has_more": offset.saturating_add(result["rows"].as_array().unwrap().len() as u64) < result["total_count"].as_u64().unwrap()
+            let (outcome, in_transaction) = crate::sessions::run(
+                connection,
+                session_id,
+                |client| {
+                    let mut result = if session_id.is_some() {
+                        crate::sessions::execute(client, &query, values, offset, limit)?
+                    } else {
+                        client.execute(&query, values, offset, limit, None)?
+                    };
+                    result["pagination"] = match limit {
+                        Some(size) => json!({
+                            "page": offset / size + 1, "page_size": size,
+                            "total_rows": result["total_count"],
+                            "has_more": offset.saturating_add(result["rows"].as_array().unwrap().len() as u64) < result["total_count"].as_u64().unwrap()
+                        }),
+                        None => Value::Null,
+                    };
+                    result["execution_time_ms"] = json!(start.elapsed().as_millis() as u64);
+                    Ok(result)
+                },
+            );
+            match session_id {
+                None => outcome,
+                Some(_) => Ok(match outcome {
+                    Ok(result) => json!({"result":result,"in_transaction":in_transaction}),
+                    Err(error) => {
+                        json!({"error":error.message,"error_code":error.code,"in_transaction":in_transaction})
+                    }
                 }),
-                None => Value::Null,
-            };
-            result["execution_time_ms"] = json!(start.elapsed().as_millis() as u64);
-            Ok(result)
+            }
         })(),
     )
 }
@@ -102,18 +124,37 @@ pub fn execute_query_batch(id: Value, params: &Value) -> Value {
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             let (offset, limit) = pagination(params)?;
-            let mut client = Client::connect(connection)?;
-            let mut results = client.execute_batch(&queries, offset, limit)?;
-            for entry in &mut results {
-                let result = &mut entry["result"];
-                result["pagination"] = match limit {
-                    Some(size) => {
-                        json!({"page":offset/size+1,"page_size":size,"total_rows":result["total_count"],"has_more":offset.saturating_add(result["rows"].as_array().unwrap().len()as u64)<result["total_count"].as_u64().unwrap()})
+            let session_id = crate::sessions::id(params)?;
+            let (outcome, in_transaction) = crate::sessions::run(
+                connection,
+                session_id,
+                |client| {
+                    let mut results = if session_id.is_some() {
+                        crate::sessions::batch(client, &queries, offset, limit)?
+                    } else {
+                        Value::Array(client.execute_batch(&queries, offset, limit)?)
+                    };
+                    for entry in results.as_array_mut().unwrap() {
+                        let result = &mut entry["result"];
+                        result["pagination"] = match limit {
+                            Some(size) => {
+                                json!({"page":offset/size+1,"page_size":size,"total_rows":result["total_count"],"has_more":offset.saturating_add(result["rows"].as_array().unwrap().len()as u64)<result["total_count"].as_u64().unwrap()})
+                            }
+                            None => Value::Null,
+                        };
                     }
-                    None => Value::Null,
-                };
+                    Ok(results)
+                },
+            );
+            match session_id {
+                None => outcome,
+                Some(_) => Ok(match outcome {
+                    Ok(results) => json!({"results":results,"in_transaction":in_transaction}),
+                    Err(error) => {
+                        json!({"results":queries.iter().map(|_|json!({"result":null,"error":error.message,"execution_time_ms":null})).collect::<Vec<_>>(),"in_transaction":in_transaction,"error_code":error.code})
+                    }
+                }),
             }
-            Ok(json!(results))
         })(),
     )
 }

@@ -3,7 +3,8 @@ use crate::control::{self, Control, Deadline};
 use crate::{error::PluginError, models::ConnectionParams};
 use rsfbclient_core::{
     charset, Dialect, FirebirdClientDbOps, FirebirdClientSqlOps, FreeStmtOp, Row, SqlType,
-    StmtType, TrDataAccessMode, TrLockResolution, TrOp, TransactionConfiguration,
+    StmtType, TrDataAccessMode, TrIsolationLevel, TrLockResolution, TrOp, TrRecordVersion,
+    TransactionConfiguration,
 };
 use rsfbclient_rust::{DbHandle, RustFbClient, RustFbClientAttachmentConfig, TrHandle};
 use serde_json::{json, Value};
@@ -19,6 +20,7 @@ pub struct Client {
     control: Arc<Control>,
     query_timeout_secs: u32,
     batch_transaction: Option<TrHandle>,
+    abort_socket: TcpStream,
 }
 impl Client {
     pub fn connect(params: ConnectionParams) -> Result<Self, PluginError> {
@@ -76,6 +78,9 @@ impl Client {
             &control,
         )?;
         control.attach(&socket)?;
+        let abort_socket = socket
+            .try_clone()
+            .map_err(|e| PluginError::internal(e.to_string()))?;
         let mut wire =
             RustFbClient::from_socket(charset::UTF_8, socket, &config).map_err(firebird_error)?;
         wire.set_blob_limit(crate::limits::current().blob_bytes);
@@ -90,7 +95,61 @@ impl Client {
                 .query_timeout_secs
                 .unwrap_or(crate::limits::current().query_timeout_secs),
             batch_transaction: None,
+            abort_socket,
         })
+    }
+
+    pub fn bind_request(&mut self, params: &ConnectionParams) -> Result<(), PluginError> {
+        self.control = control::current();
+        self.control.attach(&self.abort_socket)?;
+        self.query_timeout_secs = params
+            .query_timeout_secs
+            .unwrap_or(crate::limits::current().query_timeout_secs);
+        Ok(())
+    }
+
+    pub fn park(&self) -> Result<(), PluginError> {
+        self.control.detach();
+        self.control.check()
+    }
+
+    pub fn in_transaction(&self) -> bool {
+        self.batch_transaction.is_some()
+    }
+
+    pub fn begin(&mut self, config: TransactionConfiguration) -> Result<(), PluginError> {
+        if self.in_transaction() {
+            return Err(PluginError::invalid_params(
+                "A transaction is already open in this session",
+            ));
+        }
+        self.control.check()?;
+        let _deadline = Deadline::query(&self.control, self.query_timeout_secs);
+        self.batch_transaction = Some(
+            self.wire
+                .begin_transaction(&mut self.database, config)
+                .map_err(firebird_error)?,
+        );
+        self.control.check()
+    }
+
+    pub fn finish(&mut self, operation: TrOp) -> Result<(), PluginError> {
+        self.control.check()?;
+        let _deadline = Deadline::query(&self.control, self.query_timeout_secs);
+        let mut transaction = self
+            .batch_transaction
+            .take()
+            .ok_or_else(|| PluginError::invalid_params("No transaction is open in this session"))?;
+        let result = self.wire.transaction_operation(&mut transaction, operation).map_err(|error| {
+            if matches!(operation, TrOp::Commit | TrOp::CommitRetaining) {
+                PluginError { code: -32002, message: format!("Commit failed; outcome is unknown. Check the data before retrying: {error}") }
+            } else { firebird_error(error) }
+        });
+        if result.is_ok() && matches!(operation, TrOp::CommitRetaining | TrOp::RollbackRetaining) {
+            self.batch_transaction = Some(transaction);
+        }
+        // On any error the caller discards this attachment; never replay a commit.
+        result
     }
 
     pub fn test_connection(&mut self) -> Result<(), PluginError> {
@@ -112,8 +171,8 @@ impl Client {
                 &mut self.database,
                 TransactionConfiguration {
                     data_access: TrDataAccessMode::ReadOnly,
+                    isolation: TrIsolationLevel::ReadCommited(TrRecordVersion::RecordVersion),
                     lock_resolution: TrLockResolution::NoWait,
-                    ..TransactionConfiguration::default()
                 },
             )
             .map_err(firebird_error)?;
@@ -227,7 +286,7 @@ impl Client {
                             TrDataAccessMode::ReadOnly
                         },
                         lock_resolution: TrLockResolution::NoWait,
-                        ..TransactionConfiguration::default()
+                        isolation: TrIsolationLevel::ReadCommited(TrRecordVersion::RecordVersion),
                     },
                 )
                 .map_err(firebird_error)?,
@@ -245,12 +304,14 @@ impl Client {
                 }
                 if matches!(
                     kind,
-                    StmtType::StartTrans
-                        | StmtType::Commit
-                        | StmtType::Rollback
-                        | StmtType::Savepoint
+                    StmtType::StartTrans | StmtType::Commit | StmtType::Rollback
                 ) {
                     return Err(PluginError::invalid_params("Explicit transaction statements are not supported by per-request execution"));
+                }
+                if kind == StmtType::Savepoint && !pinned {
+                    return Err(PluginError::invalid_params(
+                        "Savepoints require an open transaction",
+                    ));
                 }
                 let columns = statement.column_names();
                 let rows = matches!(kind, StmtType::Select | StmtType::SelectForUpd);
@@ -336,8 +397,8 @@ impl Client {
                     &mut self.database,
                     TransactionConfiguration {
                         data_access: TrDataAccessMode::ReadWrite,
+                        isolation: TrIsolationLevel::ReadCommited(TrRecordVersion::RecordVersion),
                         lock_resolution: TrLockResolution::NoWait,
-                        ..TransactionConfiguration::default()
                     },
                 )
                 .map_err(firebird_error)?,
@@ -404,6 +465,11 @@ impl Client {
 
 impl Drop for Client {
     fn drop(&mut self) {
+        // Cleanup is bounded too, including idle sessions whose request was disarmed.
+        if self.control.attach(&self.abort_socket).is_err() {
+            return;
+        }
+        let _deadline = Deadline::query(&self.control, 5);
         if let Some(mut transaction) = self.batch_transaction.take() {
             let _ = self
                 .wire

@@ -66,6 +66,21 @@ struct BatchResult {
     error: Option<String>,
     execution_time_ms: Option<f64>,
 }
+#[derive(Deserialize)]
+struct SessionQuery {
+    result: QueryResult,
+    in_transaction: bool,
+}
+#[derive(Deserialize)]
+struct SessionBatch {
+    results: Vec<BatchResult>,
+    in_transaction: bool,
+}
+#[derive(Deserialize)]
+struct SessionError {
+    error: String,
+    in_transaction: bool,
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -87,6 +102,16 @@ pub fn validate_response(method: &str, value: &Value) {
             .unwrap_or_else(|e| panic!("Tabularis response contract: {e}"));
     }
     match method {
+        "execute_query" if value.get("in_transaction").is_some() => {
+            if value.get("error").is_some() {
+                decode::<SessionError>(value)
+            } else {
+                decode::<SessionQuery>(value)
+            }
+        }
+        "execute_query_batch" if value.get("in_transaction").is_some() => {
+            decode::<SessionBatch>(value)
+        }
         "execute_query" => decode::<QueryResult>(value),
         "execute_query_batch" => decode::<Vec<BatchResult>>(value),
         "get_connection_metadata" => decode::<ConnectionMetadata>(value),

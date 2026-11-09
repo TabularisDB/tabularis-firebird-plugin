@@ -46,6 +46,11 @@ impl Control {
         self.check()
     }
 
+    /// A completed request must no longer be able to cancel an idle session.
+    pub fn detach(&self) {
+        self.socket.lock().unwrap().take();
+    }
+
     pub fn check(&self) -> Result<(), PluginError> {
         match self.reason.load(Ordering::SeqCst) {
             0 => Ok(()),

@@ -6,7 +6,7 @@
 use crate::error::PluginError;
 use serde_json::Value;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectionParams {
     pub host: Option<String>,
     pub port: Option<u16>,

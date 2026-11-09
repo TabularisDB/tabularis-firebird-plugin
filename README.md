@@ -28,7 +28,8 @@ For a local deployment, run a Firebird server on the same PC and connect to `127
 |---|---|
 | `test_connection`, `ping` | Open a real connection and run `SELECT 1 FROM RDB$DATABASE`; failures return JSON-RPC errors. |
 | `execute_query` | Execute a single SELECT, DML, DDL or procedure statement; commit successful writes, roll back failures, and return rows, affected count, host pagination and elapsed time. Optional `values` bind positional parameters. |
-| `execute_query_batch` | Execute up to 1000 statements atomically; a failure rolls back the whole batch. Explicit interactive transaction statements remain unsupported. |
+| `execute_query_batch` | Execute up to 1000 statements atomically by default; with `session_id`, explicit BEGIN/COMMIT/ROLLBACK boundaries are honored across calls. |
+| Interactive sessions | Keep an explicit transaction on its editor's attachment; support savepoints and retaining operations. Release, errors, cancellation, timeouts and process EOF roll back pending changes. |
 | `get_connection_metadata` | Discover the Firebird version and expose the appropriate SQL types; Firebird 4+ adds INT128, DECFLOAT and zoned temporal types. |
 | `get_table_query_template` | Firebird SELECT previews with `FIRST`, quoted identifiers and optional row limits; UPDATE/DELETE previews include `WHERE 1 = 0` and do not enable execution of writes. |
 | `get_databases` | Return the configured database after checking connectivity. Firebird has no server-wide SQL database catalog. |
@@ -41,9 +42,9 @@ For a local deployment, run a Firebird server on the same PC and connect to `127
 | `get_all_columns_batch`, `get_all_foreign_keys_batch` | Metadata grouped by requested table name, reusing one connection per request. |
 | Grid CRUD | Parameterized inserts and complete-primary-key updates/deletes; multi-row grid mutations roll back. |
 | DDL and view management | Generate table/column/index/FK SQL, including composite keys and comments; drop indexes/FKs and create/alter/drop views. PK/identity status changes require explicit SQL. |
-| EXPLAIN | Not implemented yet. |
+| `explain_query` | Prepare-only detailed plans as a host-compatible tree with original text. Runtime analysis is rejected; the query is never executed to explain it. |
 
-Each request opens its own connection. `execute_query` accepts the host's positive `page` and `limit` values (`page_size` remains an alias). The response includes `pagination: {page, page_size, total_rows, has_more}`, or `null` for an unpaged request. Pagination streams the full result to compute the total, retaining only the requested page in memory; large queries can therefore be slow. Without a page limit, all rows are returned. Use Firebird's `FIRST`/`SKIP` or `ROWS` clauses to bound expensive queries.
+Requests open their own connection unless `session_id` retains an explicit transaction for an editor. `execute_query` accepts the host's positive `page` and `limit` values (`page_size` remains an alias). The response includes `pagination: {page, page_size, total_rows, has_more}`, or `null` for an unpaged request. Pagination streams the full result to compute the total, retaining only the requested page in memory; large queries can therefore be slow. Without a page limit, all rows are returned up to the configured buffer limits. Use Firebird's `FIRST`/`SKIP` or `ROWS` clauses to bound expensive queries. Session behavior and transaction syntax are documented in [DEVELOPMENT.md](DEVELOPMENT.md).
 
 Tabularis 0.32's data-grid limit field generates a generic `LIMIT n`, sometimes inside a `limited_subset` wrapper. The plugin translates those terminal clauses to Firebird `ROWS` syntax, with optional `OFFSET`, without treating quoted names, string literals or comments as SQL clauses. SQL templates already use native `FIRST` syntax.
 
@@ -139,9 +140,9 @@ Known limits and optional extensions:
 - Pagination still scans the full result for an exact count. Buffered results and BLOBs have configurable limits; host cancellation and connect/query deadlines are supported and tested on Firebird 3/4/5. Large-result performance needs further validation.
 - Only UTF-8 / dialect 3 network connections are configurable. Embedded mode, TLS configuration, additional character sets and roles are not exposed.
 - Package routines, legacy UDF metadata, arrays and nonstandard BLOB subtypes are unsupported; ambiguous procedure/function names return an error.
-- Dedicated BLOB export/preview RPCs and EXPLAIN are not implemented.
-- Tabularis 0.32 still displays a Create View action for this read-only driver; the plugin rejects view mutations. Hiding that action requires a host UI change.
-- The published v0.1.0 remains read-only. The unreleased development branch enables writes; interactive transactions across requests and native desktop tests of the new editing/DDL flows are still outstanding.
+- Dedicated BLOB export/preview RPCs and runtime query analysis are not implemented. Prepare-only execution plans are available in the development branch.
+- Tabularis 0.32 displays a Create View action for the published read-only v0.1.0, which rejects view mutations. The writable development branch implements view mutations.
+- The published v0.1.0 remains read-only. The unreleased development branch enables writes and interactive transactions; native desktop tests of the new editing/DDL/session flows are still outstanding.
 - The local wire-driver patches need maintenance until equivalent upstream APIs are available.
 
 ## References

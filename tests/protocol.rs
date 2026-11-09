@@ -95,3 +95,94 @@ fn cancel_interrupts_a_stalled_handshake_and_keeps_stdio_usable() {
 fn connect_timeout_interrupts_a_stalled_handshake() {
     stalled_handshake(false);
 }
+
+#[test]
+#[ignore = "mutates an isolated fixture; run tests/live-firebird.ps1"]
+fn live_stdio_sessions_roll_back_on_eof() {
+    struct Rpc {
+        process: Process,
+        input: Option<std::process::ChildStdin>,
+        lines: mpsc::Receiver<String>,
+    }
+    impl Rpc {
+        fn new() -> Self {
+            let mut process = Process(
+                Command::new(env!("CARGO_BIN_EXE_firebird-plugin"))
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .spawn()
+                    .unwrap(),
+            );
+            let input = process.0.stdin.take();
+            let output = process.0.stdout.take().unwrap();
+            let (sender, lines) = mpsc::channel();
+            thread::spawn(move || {
+                for line in BufReader::new(output).lines() {
+                    if sender.send(line.unwrap()).is_err() {
+                        break;
+                    }
+                }
+            });
+            Self {
+                process,
+                input,
+                lines,
+            }
+        }
+        fn query(&mut self, params: Value) -> Value {
+            writeln!(
+                self.input.as_mut().unwrap(),
+                "{}",
+                json!({"jsonrpc":"2.0","id":1,"method":"execute_query","params":params})
+            )
+            .unwrap();
+            self.input.as_mut().unwrap().flush().unwrap();
+            let response: Value =
+                serde_json::from_str(&self.lines.recv_timeout(Duration::from_secs(7)).unwrap())
+                    .unwrap();
+            assert!(response.get("error").is_none(), "{response}");
+            assert!(response["result"].get("error").is_none(), "{response}");
+            response["result"].clone()
+        }
+    }
+    let config: Value = serde_json::from_str(
+        &std::fs::read_to_string(std::env::var("FIREBIRD_TEST_CONFIG").unwrap()).unwrap(),
+    )
+    .unwrap();
+    let table = format!(
+        "TE_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    );
+    let mut observer = Rpc::new();
+    observer.query(json!({"params":config,"query":format!("CREATE TABLE {table}(ID INTEGER)")}));
+    let mut owner = Rpc::new();
+    owner.query(json!({"params":config,"query":"BEGIN","session_id":"editor"}));
+    let first = owner.query(json!({"params":config,"query":"SELECT CURRENT_CONNECTION, CURRENT_TRANSACTION FROM RDB$DATABASE","session_id":"editor"}));
+    assert_eq!(first["in_transaction"], true);
+    owner.query(json!({"params":config,"query":format!("INSERT INTO {table} VALUES(1)"),"session_id":"editor"}));
+    let second = owner.query(json!({"params":config,"query":"SELECT CURRENT_CONNECTION, CURRENT_TRANSACTION FROM RDB$DATABASE","session_id":"editor"}));
+    assert_eq!(first["result"]["rows"], second["result"]["rows"]);
+    assert_eq!(
+        observer.query(json!({"params":config,"query":format!("SELECT COUNT(*) FROM {table}")}))
+            ["rows"],
+        json!([[0]])
+    );
+    owner.input.take();
+    assert_eq!(
+        owner
+            .lines
+            .recv_timeout(Duration::from_secs(7))
+            .unwrap_err(),
+        mpsc::RecvTimeoutError::Disconnected
+    );
+    assert!(owner.process.0.wait().unwrap().success());
+    assert_eq!(
+        observer.query(json!({"params":config,"query":format!("SELECT COUNT(*) FROM {table}")}))
+            ["rows"],
+        json!([[0]])
+    );
+    observer.query(json!({"params":config,"query":format!("DROP TABLE {table}")}));
+}

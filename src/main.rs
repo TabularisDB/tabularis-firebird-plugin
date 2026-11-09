@@ -13,6 +13,7 @@ mod handlers;
 mod limits;
 mod models;
 mod rpc;
+mod sessions;
 mod utils;
 
 #[cfg(test)]

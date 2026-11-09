@@ -32,7 +32,7 @@ pub fn firebird_query(sql: &str) -> Result<String, PluginError> {
     terminal_limit(sql)
 }
 
-fn top_level_words(sql: &str) -> Vec<(usize, &str)> {
+pub(crate) fn top_level_words(sql: &str) -> Vec<(usize, &str)> {
     let bytes = sql.as_bytes();
     let mut i = 0;
     let mut depth = 0usize;
