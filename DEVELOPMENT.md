@@ -2,7 +2,7 @@
 
 The published v0.1.0 tag and registry-signed assets remain unchanged in the original repository. Development and releases continue on `main` in [TabularisDB/tabularis-firebird-plugin](https://github.com/TabularisDB/tabularis-firebird-plugin). This checklist tracks current main and remaining work before stable release. The earlier v0.2.0-beta.1 release and its assets remain unchanged.
 
-The companion host implementation for PSQL splitting, task cancellation and transaction-state refresh is tracked in [TabularisDB/tabularis#1462](https://github.com/TabularisDB/tabularis/pull/1462). All twelve checks passed; it remains a draft pending review, merge and a host release. Creating it does not make the functionality available in a released host.
+The companion host implementation for PSQL splitting, task cancellation and transaction-state refresh is tracked in [TabularisDB/tabularis#1462](https://github.com/TabularisDB/tabularis/pull/1462). All twelve checks passed and the PR is ready for review. Review, merge and a host release remain pending; the functionality is not yet available in a released host.
 
 - [x] Host `cancel` notifications interrupt the matching request, including a stalled authentication handshake. No notification response is emitted; queued requests remain usable.
 - [x] Honor `connect_timeout_secs` (default 10) and `query_timeout_secs` (default 0, unlimited). Zero disables the corresponding deadline.
