@@ -12,7 +12,7 @@
   "capabilities": {
     "schemas": false,
     "views": true,
-    "routines": false,
+    "routines": true,
     "file_based": false,
     "folder_based": false,
     "no_connection_required": false,

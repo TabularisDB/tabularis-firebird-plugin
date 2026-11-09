@@ -15,7 +15,7 @@ release: build-ui
 
 # Run unit tests.
 test:
-    cargo test
+    cargo test --workspace --locked
 
 # Launch the local REPL that simulates Tabularis JSON-RPC calls over stdio.
 repl:
@@ -23,7 +23,7 @@ repl:
 
 # Run clippy on the workspace.
 lint:
-    cargo clippy --all-targets -- -D warnings
+    cargo clippy --all-targets --no-deps --locked -- -D warnings
 
 # Format the codebase.
 fmt:

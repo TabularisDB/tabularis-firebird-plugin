@@ -8,7 +8,7 @@ use crate::{
     models::{inner_params, ConnectionParams},
     rpc::{error_response, not_implemented, ok_response},
 };
-use rsfbclient::SqlType;
+use rsfbclient_core::SqlType;
 
 fn respond(id: Value, result: Result<Value, PluginError>) -> Value {
     match result {
@@ -76,8 +76,10 @@ pub fn get_columns(id: Value, params: &Value) -> Value {
         id,
         (|| {
             let name = object_name(params, "table")?;
-            let rows =
-                connect(params)?.query_objects(COLUMNS_SQL, vec![SqlType::Text(name.into())])?;
+            let rows = connect(params)?.query_objects(
+                &COLUMNS_SQL.replace("{data_type}", FIELD_TYPE_SQL),
+                vec![SqlType::Text(name.into())],
+            )?;
             Ok(Value::Array(rows))
         })(),
     )
@@ -133,9 +135,7 @@ fn group_indexes(rows: Vec<Value>) -> Vec<Value> {
     indexes
 }
 
-const COLUMNS_SQL: &str = r#"
-SELECT TRIM(rf.RDB$FIELD_NAME) AS "name",
-    TRIM(CASE
+const FIELD_TYPE_SQL: &str = r#"TRIM(CASE
       WHEN f.RDB$FIELD_TYPE IN (7, 8, 16, 26) AND f.RDB$FIELD_SUB_TYPE IN (1, 2)
       THEN CASE f.RDB$FIELD_SUB_TYPE WHEN 1 THEN 'NUMERIC' ELSE 'DECIMAL' END
         || '(' || CAST(f.RDB$FIELD_PRECISION AS VARCHAR(3)) || ','
@@ -151,7 +151,11 @@ SELECT TRIM(rf.RDB$FIELD_NAME) AS "name",
         WHEN 37 THEN 'VARCHAR(' || CAST(f.RDB$CHARACTER_LENGTH AS VARCHAR(5)) || ')'
         WHEN 261 THEN 'BLOB SUB_TYPE ' || CAST(COALESCE(f.RDB$FIELD_SUB_TYPE, 0) AS VARCHAR(6))
         ELSE 'UNKNOWN' END
-    END || CASE WHEN f.RDB$DIMENSIONS IS NOT NULL THEN ' ARRAY' ELSE '' END) AS "data_type",
+    END || CASE WHEN f.RDB$DIMENSIONS IS NOT NULL THEN ' ARRAY' ELSE '' END)"#;
+
+const COLUMNS_SQL: &str = r#"
+SELECT TRIM(rf.RDB$FIELD_NAME) AS "name",
+    {data_type} AS "data_type",
     (COALESCE(rf.RDB$NULL_FLAG, 0) = 0 AND COALESCE(f.RDB$NULL_FLAG, 0) = 0) AS "is_nullable",
     COALESCE(rf.RDB$DEFAULT_SOURCE, f.RDB$DEFAULT_SOURCE) AS "default_value",
     EXISTS(SELECT 1 FROM RDB$RELATION_CONSTRAINTS rc
@@ -238,23 +242,104 @@ pub fn get_view_columns(id: Value, params: &Value) -> Value {
         (|| {
             let name = object_name(params, "view")?;
             Ok(Value::Array(connect(params)?.query_objects(
-                COLUMNS_SQL,
+                &COLUMNS_SQL.replace("{data_type}", FIELD_TYPE_SQL),
                 vec![SqlType::Text(name.into())],
             )?))
         })(),
     )
 }
 
-pub fn get_routines(id: Value, _params: &Value) -> Value {
-    ok_response(id, json!([]))
+pub fn get_routines(id: Value, params: &Value) -> Value {
+    // shortcut: package members and legacy UDFs need qualified identities and legacy type decoding before discovery.
+    respond(
+        id,
+        (|| {
+            let rows = connect(params)?.query_objects(r#"
+            SELECT TRIM(RDB$PROCEDURE_NAME) AS "name", CAST('PROCEDURE' AS VARCHAR(9)) AS "routine_type"
+            FROM RDB$PROCEDURES WHERE COALESCE(RDB$SYSTEM_FLAG, 0) = 0 AND RDB$PACKAGE_NAME IS NULL
+            UNION ALL
+            SELECT TRIM(RDB$FUNCTION_NAME), CAST('FUNCTION' AS VARCHAR(9))
+            FROM RDB$FUNCTIONS WHERE COALESCE(RDB$SYSTEM_FLAG, 0) = 0 AND RDB$PACKAGE_NAME IS NULL
+                AND COALESCE(RDB$LEGACY_FLAG, 0) = 0
+            ORDER BY 1, 2"#, vec![])?;
+            Ok(Value::Array(
+                rows.into_iter()
+                    .map(|mut row| {
+                        row["schema"] = Value::Null;
+                        row
+                    })
+                    .collect(),
+            ))
+        })(),
+    )
 }
 
-pub fn get_routine_parameters(id: Value, _params: &Value) -> Value {
-    ok_response(id, json!([]))
+fn routine(client: &mut Client, name: &str) -> Result<Value, PluginError> {
+    let mut rows = client.query_objects(r#"
+        SELECT CAST('PROCEDURE' AS VARCHAR(9)) AS "routine_type", RDB$PROCEDURE_SOURCE AS "definition"
+        FROM RDB$PROCEDURES WHERE RDB$PROCEDURE_NAME = ? AND RDB$PACKAGE_NAME IS NULL
+            AND COALESCE(RDB$SYSTEM_FLAG, 0) = 0
+        UNION ALL
+        SELECT CAST('FUNCTION' AS VARCHAR(9)), RDB$FUNCTION_SOURCE
+        FROM RDB$FUNCTIONS WHERE RDB$FUNCTION_NAME = ? AND RDB$PACKAGE_NAME IS NULL
+            AND COALESCE(RDB$SYSTEM_FLAG, 0) = 0 AND COALESCE(RDB$LEGACY_FLAG, 0) = 0"#,
+        vec![SqlType::Text(name.into()), SqlType::Text(name.into())])?;
+    match rows.len() {
+        0 => Err(PluginError::invalid_params("Routine does not exist")),
+        1 => Ok(rows.remove(0)),
+        _ => Err(PluginError::invalid_params(
+            "Routine name is ambiguous: a procedure and function share this name",
+        )),
+    }
 }
 
-pub fn get_routine_definition(id: Value, _params: &Value) -> Value {
-    ok_response(id, Value::String(String::new()))
+pub fn get_routine_parameters(id: Value, params: &Value) -> Value {
+    respond(
+        id,
+        (|| {
+            let name = object_name(params, "routine")?;
+            let mut client = connect(params)?;
+            let kind = routine(&mut client, name)?;
+            let sql = if kind["routine_type"] == "PROCEDURE" {
+                r#"
+            SELECT TRIM(p.RDB$PARAMETER_NAME) AS "name", {data_type} AS "data_type",
+                TRIM(CAST(CASE p.RDB$PARAMETER_TYPE WHEN 0 THEN 'IN' ELSE 'OUT' END AS VARCHAR(3))) AS "mode"
+            FROM RDB$PROCEDURE_PARAMETERS p JOIN RDB$FIELDS f ON f.RDB$FIELD_NAME = p.RDB$FIELD_SOURCE
+            WHERE p.RDB$PROCEDURE_NAME = ? AND p.RDB$PACKAGE_NAME IS NULL
+            ORDER BY p.RDB$PARAMETER_TYPE, p.RDB$PARAMETER_NUMBER"#
+            } else {
+                r#"
+            SELECT COALESCE(TRIM(a.RDB$ARGUMENT_NAME), 'RETURN_VALUE') AS "name", {data_type} AS "data_type",
+                TRIM(CAST(CASE WHEN a.RDB$ARGUMENT_POSITION = r.RDB$RETURN_ARGUMENT THEN 'OUT' ELSE 'IN' END AS VARCHAR(3))) AS "mode"
+            FROM RDB$FUNCTION_ARGUMENTS a JOIN RDB$FIELDS f ON f.RDB$FIELD_NAME = a.RDB$FIELD_SOURCE
+            JOIN RDB$FUNCTIONS r ON r.RDB$FUNCTION_NAME = a.RDB$FUNCTION_NAME AND r.RDB$PACKAGE_NAME IS NULL
+            WHERE a.RDB$FUNCTION_NAME = ? AND a.RDB$PACKAGE_NAME IS NULL
+            ORDER BY a.RDB$ARGUMENT_POSITION"#
+            };
+            Ok(Value::Array(client.query_objects(
+                &sql.replace("{data_type}", FIELD_TYPE_SQL),
+                vec![SqlType::Text(name.into())],
+            )?))
+        })(),
+    )
+}
+
+pub fn get_routine_definition(id: Value, params: &Value) -> Value {
+    respond(
+        id,
+        (|| {
+            let name = object_name(params, "routine")?;
+            let row = routine(&mut connect(params)?, name)?;
+            row.get("definition")
+                .filter(|v| v.is_string())
+                .cloned()
+                .ok_or_else(|| {
+                    PluginError::internal(
+                        "Routine source is unavailable (for example, an external routine)",
+                    )
+                })
+        })(),
+    )
 }
 
 pub fn get_schema_snapshot(id: Value, _params: &Value) -> Value {
@@ -311,6 +396,17 @@ mod tests {
     fn rejects_missing_view_before_connecting() {
         for value in [json!({}), json!({"view": ""}), json!({"view": 1})] {
             for handler in [get_view_definition, get_view_columns] {
+                let response = handler(json!(7), &value);
+                assert_eq!(response["id"], json!(7));
+                assert_eq!(response["error"]["code"], json!(-32602));
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_missing_routine_before_connecting() {
+        for value in [json!({}), json!({"routine": ""}), json!({"routine": 1})] {
+            for handler in [get_routine_definition, get_routine_parameters] {
                 let response = handler(json!(7), &value);
                 assert_eq!(response["id"], json!(7));
                 assert_eq!(response["error"]["code"], json!(-32602));
@@ -440,6 +536,63 @@ mod tests {
             )["rows"],
             json!([["alpha"], ["beta"]])
         );
+        let routines = call("get_routines", json!({}));
+        let routines = routines.as_array().unwrap();
+        assert_eq!(routines.len(), 6);
+        assert!(routines.iter().any(|r| r["name"] == "FB_ADD"
+            && r["routine_type"] == "PROCEDURE"
+            && r["schema"].is_null()));
+        assert!(routines
+            .iter()
+            .any(|r| r["name"] == "FB_TAX" && r["routine_type"] == "FUNCTION"));
+        assert!(!routines.iter().any(|r| r["name"] == "FB_HIDDEN"));
+        assert_eq!(
+            call("get_routine_parameters", json!({"routine":"FB_ADD"})),
+            json!([
+                {"name":"A", "data_type":"INTEGER", "mode":"IN"},
+                {"name":"B", "data_type":"INTEGER", "mode":"IN"},
+                {"name":"RESULT_VALUE", "data_type":"INTEGER", "mode":"OUT"}
+            ])
+        );
+        assert_eq!(
+            call("get_routine_parameters", json!({"routine":"FB_NO_ARGS"})),
+            json!([])
+        );
+        assert_eq!(
+            call("get_routine_parameters", json!({"routine":"FB_TAX"})),
+            json!([
+                {"name":"RETURN_VALUE", "data_type":"DECIMAL(18,2)", "mode":"OUT"},
+                {"name":"AMOUNT", "data_type":"DECIMAL(18,2)", "mode":"IN"},
+                {"name":"RATE", "data_type":"DECIMAL(5,2)", "mode":"IN"}
+            ])
+        );
+        assert!(call("get_routine_definition", json!({"routine":"FB_ADD"}))
+            .as_str()
+            .unwrap()
+            .contains("SUSPEND"));
+        assert!(call("get_routine_definition", json!({"routine":"FB_TAX"}))
+            .as_str()
+            .unwrap()
+            .contains("RETURN AMOUNT * RATE"));
+        assert_eq!(
+            call("get_routine_parameters", json!({"routine":"odd' routine"}))[1],
+            json!({"name":"mixedCase", "data_type":"VARCHAR(12)", "mode":"IN"})
+        );
+        assert!(
+            call("get_routine_definition", json!({"routine":"odd' routine"}))
+                .as_str()
+                .unwrap()
+                .contains("mixedCase")
+        );
+        for name in ["' OR 1=1 --", "FB_SHARED", "FB_HIDDEN"] {
+            let params = json!({"params": config.clone(), "routine": name});
+            assert!(get_routine_definition(json!(4), &params)
+                .get("error")
+                .is_some());
+            assert!(get_routine_parameters(json!(4), &params)
+                .get("error")
+                .is_some());
+        }
         let mut client = Client::connect(ConnectionParams::from_value(&config).unwrap()).unwrap();
         assert!(client
             .query(

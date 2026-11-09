@@ -1,6 +1,6 @@
 ﻿# Firebird — Tabularis Plugin
 
-Read-only Firebird network driver for [Tabularis](https://github.com/TabularisDB/tabularis), built with `rsfbclient`'s pure Rust wire driver. No Firebird client DLL is required. This is an initial implementation, not a complete driver yet.
+Read-only Firebird network driver for [Tabularis](https://github.com/TabularisDB/tabularis), built with a locally patched `rsfbclient-rust` wire driver. No Firebird client DLL is required. This is an initial implementation, not a complete driver yet.
 
 ## Build and install
 
@@ -29,27 +29,29 @@ The connection uses UTF-8 and SQL dialect 3. A local Firebird server is supporte
 | `get_indexes`, `get_foreign_keys` | Ordered index columns, unique/primary flags, expression source and composite foreign-key mappings with update/delete rules. |
 | Schemas | Empty list; Firebird does not use SQL schemas. |
 | `get_views`, `get_view_definition`, `get_view_columns` | User views, SQL source and ordered columns; view queries use the normal read-only execution path. |
-| Routines | Not implemented; disabled in the manifest. |
+| `get_routines`, `get_routine_parameters`, `get_routine_definition` | Top-level stored procedures and functions, ordered IN/OUT parameters, function return values and PSQL bodies. |
 | Batch metadata / schema snapshot | Return method-not-found so the host can fall back to standard metadata calls. |
 | CRUD, DDL, EXPLAIN | Not implemented. The manifest disables editing and table management. |
 
 Each request opens its own connection. `execute_query` accepts optional positive `page` and `page_size` values. Pagination streams the full result to compute `total_count`, retaining only the requested page in memory; large queries can therefore be slow. Without `page_size`, all rows are returned. Use Firebird's `FIRST`/`SKIP` or `ROWS` clauses to bound expensive queries.
 
-Current result limitations:
+Routine discovery excludes package members and legacy external UDFs. A function's return value is an `OUT` parameter named `RETURN_VALUE`, listed before its inputs. External routines without stored PSQL source return an explicit error for definition requests. If a procedure and function share a name, detail requests return an ambiguity error because the host supplies no routine-type discriminator. Routine discovery does not execute the routines.
 
-- An empty result has no column names because the driver's high-level API exposes them through fetched rows.
+Result representation and remaining limitations:
+
+- Column names come from prepared statement metadata, including for empty results and pages beyond the last row.
 - Large integers outside JavaScript's exact integer range, and INT128 values, are returned as decimal strings.
-- The upstream driver converts NUMERIC/DECIMAL to floating point, which can lose precision. Use `CAST(amount AS VARCHAR(100))` when exact digits matter. This must be addressed before financial use.
+- NUMERIC/DECIMAL values are returned as exact decimal strings, including zero-scale decimals and 38-digit values. Conversion happens on the server before transmission; no floating-point conversion is involved. FLOAT/DOUBLE values remain JSON numbers.
 - Dates and times use the driver's timestamp representation. Binary BLOBs are JSON byte arrays; text BLOBs are strings.
 - Some newer Firebird types, including DECFLOAT and time-zone types, are unsupported by the upstream reader and return errors.
 
-See the [upstream type mappings](https://docs.rs/rsfbclient/0.29.0/rsfbclient/#data-type-mappings).
+The local driver source and its two functional patches are documented in [vendor/rsfbclient-rust/README.md](vendor/rsfbclient-rust/README.md). It is MIT-licensed; releases include [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Queries use an explicit read-only transaction, accept only SELECT statement types, and release statements and transactions on success or error.
 
 ## Tests
 
 ```powershell
-cargo test --locked
-cargo clippy --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+cargo clippy --all-targets --no-deps --locked -- -D warnings
 cargo fmt --all -- --check
 ```
 
@@ -72,6 +74,8 @@ cargo test --locked live_connection_select_and_read_only_transaction -- --ignore
 
 This single test checks connectivity, a SELECT result, the transaction's read-only flag and SQL error propagation against an existing database. It does not create a database or test instance. Use the portable script to also test metadata, domain defaults, composite keys, identifier binding, rejected writes and invalid credentials against `tests/fixture.sql`.
 
+The live suite also covers empty result headers, exact positive/negative decimals and INT128-backed decimals, zero-scale decimals, ordinary floating-point values, NULLs, and reusing a connection after a failed query. Workspace tests include the vendored wire driver's tests; Clippy targets plugin code without linting third-party implementation details.
+
 For a direct JSON-RPC smoke test without a server:
 
 ```powershell
@@ -86,7 +90,7 @@ This must return an invalid-params error rather than success. The generated `jus
 - `src/handlers/query.rs`: connection checks, query validation and pagination.
 - `src/models.rs`: connection parameter validation.
 - `src/rpc.rs`: JSON-RPC dispatch.
-- `src/handlers/metadata.rs`: table and view catalog discovery; routines remain scaffold methods.
+- `src/handlers/metadata.rs`: table, view and routine catalog discovery.
 - `src/handlers/crud.rs`, `ddl.rs`: remaining scaffold methods.
 
 ## Publishing

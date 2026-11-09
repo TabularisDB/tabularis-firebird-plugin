@@ -6,9 +6,14 @@ description = "Tabularis driver plugin for Firebird"
 license = "Apache-2.0"
 publish = false
 
+[workspace]
+members = ["vendor/rsfbclient-rust"]
+default-members = ["."]
+
 [dependencies]
 serde_json = "1"
-rsfbclient = { version = "0.29", default-features = false, features = ["pure_rust"] }
+rsfbclient-core = "0.29"
+rsfbclient-rust = { path = "vendor/rsfbclient-rust" }
 
 [profile.release]
 lto = true
