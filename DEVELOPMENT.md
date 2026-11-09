@@ -12,7 +12,11 @@ The published v0.1.0 tag and registry-signed assets remain unchanged. Work conti
 - [x] Pinned interactive transactions across requests with `session_id`; BEGIN/START TRANSACTION/SET TRANSACTION, read-only/read-write modes, snapshot/read-committed isolation, savepoints and retaining commit/rollback. Release, process EOF, execution errors, cancellation and deadlines roll back an open transaction. At most 32 sessions retain an attachment; connection changes are rejected while its transaction is open.
 - [x] SQL builders for tables, columns, indexes and composite foreign keys; column comments and view create/alter/drop. Primary-key/identity status changes currently require explicit SQL.
 - [x] Firebird type catalog, with additional Firebird 4+ types discovered per connection.
-- [ ] Package routines, triggers, sequences, routine calls and ambiguity handling.
+- [x] Public package routines and legacy UDF parameter metadata, with reversible quoted identities and routine-type discriminators for procedure/function name collisions. Private members remain excluded. Package source falls back to its body when individual source is unavailable; external source reports an explicit error.
+- [x] Table, database and DDL trigger discovery, full PSQL create/edit scripts and create/alter/drop RPCs; preserve active status, position and event order. Unknown event codes remain explicit and cannot be regenerated as guessed SQL.
+- [x] Read-only sequence catalog RPC (`get_sequences`) exposes initial value, increment and comment without consuming sequence values. The host currently has no sequence-explorer contract.
+- [x] Firebird routine-call SQL builder: match arguments by catalog name/order, escape literals, and distinguish selectable procedures, executable procedures and scalar functions, including package members.
+- [ ] Complete routine-management UI support (lossless edit scripts, creation templates and drop), plus native editor validation. `routine_management` remains disabled until all operations behind that capability work; the call-builder RPC is available directly.
 - [x] Prepare-only detailed execution plans, rendered as a host-compatible tree with the original text retained. Tested on Firebird 3/4/5, including DML with no side effects. Runtime analysis is explicitly rejected; unavailable costs and row estimates remain null.
 - [ ] Runtime analysis, column statistics, BLOB export/preview and lossless SQL export/import.
 - [ ] Modern wire encryption, roles and character-set options; explicitly decide embedded and legacy-version scope.

@@ -37,7 +37,10 @@ For a local deployment, run a Firebird server on the same PC and connect to `127
 | `get_indexes`, `get_foreign_keys` | Ordered index columns, unique/primary flags, expression source and composite foreign-key mappings with update/delete rules. |
 | Schemas | Empty list; Firebird does not use SQL schemas. |
 | `get_views`, `get_view_definition`, `get_view_columns` | User views, SQL source and ordered columns; view queries use the normal read-only execution path. |
-| `get_routines`, `get_routine_parameters`, `get_routine_definition` | Top-level stored procedures and functions, ordered IN/OUT parameters, function return values and PSQL bodies. |
+| `get_routines`, `get_routine_parameters`, `get_routine_definition` | Top-level and public package routines, legacy UDF parameters, ordered IN/OUT arguments and PSQL/package source. |
+| `build_routine_call_sql` | Firebird-specific call previews with catalog-ordered arguments, including selectable procedures and package functions. Full routine-management UI remains disabled pending complete edit/template/drop support. |
+| Trigger management | Discover table/database/DDL triggers, reconstruct PSQL definitions and create/alter/drop triggers with their status, position and events preserved. |
+| `get_sequences` | Read initial values, increments and comments without advancing a sequence. This is an extension RPC; the host has no sequence explorer yet. |
 | `get_schema_snapshot` | All user tables with columns and foreign keys for the ER diagram; views and system tables are excluded. |
 | `get_all_columns_batch`, `get_all_foreign_keys_batch` | Metadata grouped by requested table name, reusing one connection per request. |
 | Grid CRUD | Parameterized inserts and complete-primary-key updates/deletes; multi-row grid mutations roll back. |
@@ -50,7 +53,7 @@ Tabularis 0.32's data-grid limit field generates a generic `LIMIT n`, sometimes 
 
 The host's table **New Console** action also emits `SELECT * FROM "database"."table"`. The plugin removes that qualifier only for this exact query shape and only when it matches the connected database. Firebird SQL entered manually should use unqualified table names; other qualified expressions are passed through and may be rejected by Firebird.
 
-Routine discovery excludes package members and legacy external UDFs. A function's return value is an `OUT` parameter named `RETURN_VALUE`, listed before its inputs. Parameters include the host-required `ordinal_position`. External routines without stored PSQL source return an explicit error for definition requests. If a procedure and function share a name, definition requests can use the host's `routine_type`; parameter requests remain ambiguous because the host supplies no type discriminator for them. Routine discovery does not execute the routines.
+Routine discovery includes public package members and legacy external UDFs. Package identities use separately quoted components such as `"PACKAGE"."ROUTINE"`; a literal dot inside a top-level name remains one quoted identifier. Private package members are excluded. A function's return value is an `OUT` parameter named `RETURN_VALUE`, listed before its inputs; unnamed legacy inputs use `ARGUMENT_n`. Parameters include the host-required `ordinal_position`. External routines without stored PSQL source return an explicit error for definition requests; packaged routines can return the containing package body when individual source is unavailable. Colliding procedure/function names carry `identity_args: "PROCEDURE"` or `"FUNCTION"`, which recent hosts forward on parameter/definition requests. Older clients without that discriminator receive an ambiguity error rather than another routine's data. Discovery does not execute routines.
 
 The runtime contract follows Tabularis's actual driver implementation: view details use `view_name`, routine details use `routine_name`, foreign keys use `name`/`ref_table`/`ref_column`/`seq_in_fk`, and indexes return one row per segment with `name`/`column_name`/`seq_in_index`. The older `view` and `routine` request names remain accepted. Some plugin-guide examples show older shapes; live tests deserialize responses against the required host fields in `src/host_contract_tests.rs`.
 
@@ -139,7 +142,7 @@ Known limits and optional extensions:
 
 - Pagination still scans the full result for an exact count. Buffered results and BLOBs have configurable limits; host cancellation and connect/query deadlines are supported and tested on Firebird 3/4/5. Large-result performance needs further validation.
 - Only UTF-8 / dialect 3 network connections are configurable. Embedded mode, TLS configuration, additional character sets and roles are not exposed.
-- Package routines, legacy UDF metadata, arrays and nonstandard BLOB subtypes are unsupported; ambiguous procedure/function names return an error.
+- Private package routines, arrays and nonstandard BLOB subtypes remain unsupported. Procedure/function name collisions require the returned identity discriminator. Full routine management and native trigger/editor UX still need validation.
 - Dedicated BLOB export/preview RPCs and runtime query analysis are not implemented. Prepare-only execution plans are available in the development branch.
 - Tabularis 0.32 displays a Create View action for the published read-only v0.1.0, which rejects view mutations. The writable development branch implements view mutations.
 - The published v0.1.0 remains read-only. The unreleased development branch enables writes and interactive transactions; native desktop tests of the new editing/DDL/session flows are still outstanding.

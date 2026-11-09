@@ -10,18 +10,18 @@ use crate::{
 };
 use rsfbclient_core::SqlType;
 
-fn respond(id: Value, result: Result<Value, PluginError>) -> Value {
+pub(super) fn respond(id: Value, result: Result<Value, PluginError>) -> Value {
     match result {
         Ok(value) => ok_response(id, value),
         Err(error) => error_response(id, error.code, &error.message),
     }
 }
 
-fn connect(params: &Value) -> Result<Client, PluginError> {
+pub(super) fn connect(params: &Value) -> Result<Client, PluginError> {
     Client::connect(ConnectionParams::from_value(inner_params(params))?)
 }
 
-fn object_name<'a>(params: &'a Value, key: &str) -> Result<&'a str, PluginError> {
+pub(super) fn object_name<'a>(params: &'a Value, key: &str) -> Result<&'a str, PluginError> {
     params
         .get(format!("{key}_name"))
         .or_else(|| params.get(key))
@@ -264,40 +264,67 @@ pub fn get_view_columns(id: Value, params: &Value) -> Value {
 }
 
 pub fn get_routines(id: Value, params: &Value) -> Value {
-    // shortcut: package members and legacy UDFs need qualified identities and legacy type decoding before discovery.
     respond(
         id,
         (|| {
             let rows = connect(params)?.query_objects(r#"
-            SELECT TRIM(RDB$PROCEDURE_NAME) AS "name", CAST('PROCEDURE' AS VARCHAR(9)) AS "routine_type"
-            FROM RDB$PROCEDURES WHERE COALESCE(RDB$SYSTEM_FLAG, 0) = 0 AND RDB$PACKAGE_NAME IS NULL
+            SELECT TRIM(RDB$PROCEDURE_NAME) AS "name", CAST('PROCEDURE' AS VARCHAR(9)) AS "routine_type", TRIM(RDB$PACKAGE_NAME) AS "package"
+            FROM RDB$PROCEDURES WHERE COALESCE(RDB$SYSTEM_FLAG, 0) = 0 AND COALESCE(RDB$PRIVATE_FLAG,0)=0
             UNION ALL
-            SELECT TRIM(RDB$FUNCTION_NAME), CAST('FUNCTION' AS VARCHAR(9))
-            FROM RDB$FUNCTIONS WHERE COALESCE(RDB$SYSTEM_FLAG, 0) = 0 AND RDB$PACKAGE_NAME IS NULL
-                AND COALESCE(RDB$LEGACY_FLAG, 0) = 0
+            SELECT TRIM(RDB$FUNCTION_NAME), CAST('FUNCTION' AS VARCHAR(9)), TRIM(RDB$PACKAGE_NAME)
+            FROM RDB$FUNCTIONS WHERE COALESCE(RDB$SYSTEM_FLAG, 0) = 0 AND COALESCE(RDB$PRIVATE_FLAG,0)=0
             ORDER BY 1, 2"#, vec![])?;
-            Ok(Value::Array(
-                rows.into_iter()
-                    .map(|mut row| {
-                        row["schema"] = Value::Null;
-                        row
-                    })
-                    .collect(),
-            ))
+            let mut rows = rows
+                .into_iter()
+                .map(|mut row| {
+                    let package = row.as_object_mut().unwrap().remove("package").unwrap();
+                    let name = super::routines::Name {
+                        package: package.as_str().map(str::to_owned),
+                        name: row["name"].as_str().unwrap().into(),
+                    };
+                    row["name"] = json!(name.display());
+                    row["schema"] = Value::Null;
+                    row
+                })
+                .collect::<Vec<_>>();
+            let mut counts = std::collections::HashMap::new();
+            for row in &rows {
+                *counts
+                    .entry(row["name"].as_str().unwrap().to_owned())
+                    .or_insert(0) += 1;
+            }
+            for row in &mut rows {
+                if counts[row["name"].as_str().unwrap()] > 1 {
+                    row["identity_args"] = row["routine_type"].clone();
+                }
+            }
+            rows.sort_by(|a, b| {
+                a["name"]
+                    .as_str()
+                    .cmp(&b["name"].as_str())
+                    .then(a["routine_type"].as_str().cmp(&b["routine_type"].as_str()))
+            });
+            Ok(Value::Array(rows))
         })(),
     )
 }
 
-fn routine(client: &mut Client, name: &str, kind: Option<&str>) -> Result<Value, PluginError> {
+pub(super) fn routine(
+    client: &mut Client,
+    name: &super::routines::Name,
+    kind: Option<&str>,
+) -> Result<Value, PluginError> {
     let mut rows = client.query_objects(r#"
-        SELECT CAST('PROCEDURE' AS VARCHAR(9)) AS "routine_type", RDB$PROCEDURE_SOURCE AS "definition"
-        FROM RDB$PROCEDURES WHERE RDB$PROCEDURE_NAME = ? AND RDB$PACKAGE_NAME IS NULL
-            AND COALESCE(RDB$SYSTEM_FLAG, 0) = 0
+        SELECT CAST('PROCEDURE' AS VARCHAR(9)) AS "routine_type", COALESCE(p.RDB$PROCEDURE_SOURCE,k.RDB$PACKAGE_BODY_SOURCE) AS "definition", p.RDB$PROCEDURE_TYPE AS "procedure_type"
+        FROM RDB$PROCEDURES p LEFT JOIN RDB$PACKAGES k ON k.RDB$PACKAGE_NAME=p.RDB$PACKAGE_NAME
+        WHERE p.RDB$PROCEDURE_NAME = ? AND p.RDB$PACKAGE_NAME IS NOT DISTINCT FROM CAST(? AS VARCHAR(63))
+            AND COALESCE(p.RDB$SYSTEM_FLAG, 0) = 0 AND COALESCE(p.RDB$PRIVATE_FLAG,0)=0
         UNION ALL
-        SELECT CAST('FUNCTION' AS VARCHAR(9)), RDB$FUNCTION_SOURCE
-        FROM RDB$FUNCTIONS WHERE RDB$FUNCTION_NAME = ? AND RDB$PACKAGE_NAME IS NULL
-            AND COALESCE(RDB$SYSTEM_FLAG, 0) = 0 AND COALESCE(RDB$LEGACY_FLAG, 0) = 0"#,
-        vec![SqlType::Text(name.into()), SqlType::Text(name.into())])?;
+        SELECT CAST('FUNCTION' AS VARCHAR(9)), COALESCE(f.RDB$FUNCTION_SOURCE,k.RDB$PACKAGE_BODY_SOURCE), CAST(NULL AS SMALLINT)
+        FROM RDB$FUNCTIONS f LEFT JOIN RDB$PACKAGES k ON k.RDB$PACKAGE_NAME=f.RDB$PACKAGE_NAME
+        WHERE f.RDB$FUNCTION_NAME = ? AND f.RDB$PACKAGE_NAME IS NOT DISTINCT FROM CAST(? AS VARCHAR(63))
+            AND COALESCE(f.RDB$SYSTEM_FLAG, 0) = 0 AND COALESCE(f.RDB$PRIVATE_FLAG,0)=0"#,
+        vec![SqlType::Text(name.name.clone()), name.package.clone().map(SqlType::Text).unwrap_or(SqlType::Null), SqlType::Text(name.name.clone()), name.package.clone().map(SqlType::Text).unwrap_or(SqlType::Null)])?;
     if let Some(kind) = kind {
         rows.retain(|row| row["routine_type"] == kind);
     }
@@ -314,52 +341,52 @@ pub fn get_routine_parameters(id: Value, params: &Value) -> Value {
     respond(
         id,
         (|| {
-            let name = object_name(params, "routine")?;
+            let name = super::routines::Name::from_request(params)?;
+            let requested_kind = super::routines::kind(params)?;
             let mut client = connect(params)?;
-            let kind = routine(&mut client, name, None)?;
-            let sql = if kind["routine_type"] == "PROCEDURE" {
-                r#"
+            let kind = routine(&mut client, &name, requested_kind)?;
+            Ok(Value::Array(routine_parameters(&mut client, &name, &kind)?))
+        })(),
+    )
+}
+
+pub(super) fn routine_parameters(
+    client: &mut Client,
+    name: &super::routines::Name,
+    kind: &Value,
+) -> Result<Vec<Value>, PluginError> {
+    let sql = if kind["routine_type"] == "PROCEDURE" {
+        r#"
             SELECT TRIM(p.RDB$PARAMETER_NAME) AS "name", {data_type} AS "data_type",
                 TRIM(CAST(CASE p.RDB$PARAMETER_TYPE WHEN 0 THEN 'IN' ELSE 'OUT' END AS VARCHAR(3))) AS "mode",
                 p.RDB$PARAMETER_NUMBER + 1 AS "ordinal_position"
             FROM RDB$PROCEDURE_PARAMETERS p JOIN RDB$FIELDS f ON f.RDB$FIELD_NAME = p.RDB$FIELD_SOURCE
-            WHERE p.RDB$PROCEDURE_NAME = ? AND p.RDB$PACKAGE_NAME IS NULL
+            WHERE p.RDB$PROCEDURE_NAME = ? AND p.RDB$PACKAGE_NAME IS NOT DISTINCT FROM CAST(? AS VARCHAR(63))
             ORDER BY p.RDB$PARAMETER_TYPE, p.RDB$PARAMETER_NUMBER"#
-            } else {
-                r#"
-            SELECT COALESCE(TRIM(a.RDB$ARGUMENT_NAME), 'RETURN_VALUE') AS "name", {data_type} AS "data_type",
+    } else {
+        r#"
+            SELECT COALESCE(TRIM(a.RDB$ARGUMENT_NAME), CASE WHEN a.RDB$ARGUMENT_POSITION=r.RDB$RETURN_ARGUMENT THEN 'RETURN_VALUE' ELSE 'ARGUMENT_' || CAST(a.RDB$ARGUMENT_POSITION AS VARCHAR(6)) END) AS "name",
+                CASE WHEN COALESCE(r.RDB$LEGACY_FLAG,0)=1 THEN {legacy_type} ELSE {data_type} END AS "data_type",
                 TRIM(CAST(CASE WHEN a.RDB$ARGUMENT_POSITION = r.RDB$RETURN_ARGUMENT THEN 'OUT' ELSE 'IN' END AS VARCHAR(3))) AS "mode",
                 a.RDB$ARGUMENT_POSITION AS "ordinal_position"
-            FROM RDB$FUNCTION_ARGUMENTS a JOIN RDB$FIELDS f ON f.RDB$FIELD_NAME = a.RDB$FIELD_SOURCE
-            JOIN RDB$FUNCTIONS r ON r.RDB$FUNCTION_NAME = a.RDB$FUNCTION_NAME AND r.RDB$PACKAGE_NAME IS NULL
-            WHERE a.RDB$FUNCTION_NAME = ? AND a.RDB$PACKAGE_NAME IS NULL
+            FROM RDB$FUNCTION_ARGUMENTS a LEFT JOIN RDB$FIELDS f ON f.RDB$FIELD_NAME = a.RDB$FIELD_SOURCE
+            JOIN RDB$FUNCTIONS r ON r.RDB$FUNCTION_NAME = a.RDB$FUNCTION_NAME AND r.RDB$PACKAGE_NAME IS NOT DISTINCT FROM a.RDB$PACKAGE_NAME
+            WHERE a.RDB$FUNCTION_NAME = ? AND a.RDB$PACKAGE_NAME IS NOT DISTINCT FROM CAST(? AS VARCHAR(63))
             ORDER BY a.RDB$ARGUMENT_POSITION"#
-            };
-            Ok(Value::Array(client.query_objects(
-                &sql.replace("{data_type}", FIELD_TYPE_SQL),
-                vec![SqlType::Text(name.into())],
-            )?))
-        })(),
-    )
+    };
+    client.query_objects(
+                &sql.replace("{data_type}", FIELD_TYPE_SQL).replace("{legacy_type}",&FIELD_TYPE_SQL.replace("f.","a.").replace("a.RDB$DIMENSIONS","CAST(NULL AS SMALLINT)").replace("WHEN 261 THEN", "WHEN 40 THEN 'CSTRING(' || CAST(COALESCE(a.RDB$CHARACTER_LENGTH,a.RDB$FIELD_LENGTH) AS VARCHAR(6)) || ')' WHEN 45 THEN 'BLOB_ID' WHEN 261 THEN")),
+                vec![SqlType::Text(name.name.clone()),name.package.clone().map(SqlType::Text).unwrap_or(SqlType::Null)],
+            )
 }
 
 pub fn get_routine_definition(id: Value, params: &Value) -> Value {
     respond(
         id,
         (|| {
-            let name = object_name(params, "routine")?;
-            let kind = match params.get("routine_type") {
-                None | Some(Value::Null) => None,
-                Some(Value::String(kind)) if matches!(kind.as_str(), "FUNCTION" | "PROCEDURE") => {
-                    Some(kind.as_str())
-                }
-                _ => {
-                    return Err(PluginError::invalid_params(
-                        "routine_type must be FUNCTION or PROCEDURE",
-                    ))
-                }
-            };
-            let row = routine(&mut connect(params)?, name, kind)?;
+            let name = super::routines::Name::from_request(params)?;
+            let kind = super::routines::kind(params)?;
+            let row = routine(&mut connect(params)?, &name, kind)?;
             row.get("definition")
                 .filter(|v| v.is_string())
                 .cloned()
@@ -586,6 +613,15 @@ mod tests {
         crate::host_contract_tests::validate_response("get_connection_metadata", &discovered);
         assert!(discovered["data_types"].as_array().unwrap().len() >= 15);
         assert_eq!(
+            discovered["data_types"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["name"] == "INTEGER")
+                .unwrap()["supports_auto_increment"],
+            true
+        );
+        assert_eq!(
             call("get_databases", json!({})),
             json!([config["database"]])
         );
@@ -718,7 +754,7 @@ mod tests {
         );
         let routines = call("get_routines", json!({}));
         let routines = routines.as_array().unwrap();
-        assert_eq!(routines.len(), 6);
+        assert_eq!(routines.len(), 12);
         assert!(routines.iter().any(|r| r["name"] == "FB_ADD"
             && r["routine_type"] == "PROCEDURE"
             && r["schema"].is_null()));
@@ -726,6 +762,68 @@ mod tests {
             .iter()
             .any(|r| r["name"] == "FB_TAX" && r["routine_type"] == "FUNCTION"));
         assert!(!routines.iter().any(|r| r["name"] == "FB_HIDDEN"));
+        assert!(routines
+            .iter()
+            .any(|r| r["name"] == "\"FB_PACKAGE\".\"FB_HIDDEN\""));
+        assert!(!routines
+            .iter()
+            .any(|r| r["name"].as_str().unwrap().contains("FB_PRIVATE")));
+        for row in routines.iter().filter(|r| r["name"] == "FB_SHARED") {
+            assert_eq!(row["identity_args"], row["routine_type"]);
+            let args = call(
+                "get_routine_parameters",
+                json!({"routine_name":row["name"],"identity_args":row["identity_args"]}),
+            );
+            assert_eq!(
+                args.as_array().unwrap().len(),
+                if row["routine_type"] == "FUNCTION" {
+                    1
+                } else {
+                    0
+                }
+            );
+        }
+        assert_eq!(
+            call(
+                "get_routine_parameters",
+                json!({"routine_name":"\"FB_PACKAGE\".\"FB_ECHO\""})
+            ),
+            json!([
+                {"name":"V","data_type":"INTEGER","mode":"IN","ordinal_position":1},
+                {"name":"RESULT_VALUE","data_type":"INTEGER","mode":"OUT","ordinal_position":1}
+            ])
+        );
+        assert_eq!(
+            call(
+                "get_routine_parameters",
+                json!({"routine_name":"\"FB_PACKAGE\".\"FB_DOUBLE\""})
+            )[1]["name"],
+            "V"
+        );
+        assert!(call(
+            "get_routine_definition",
+            json!({"routine_name":"\"odd.package\".\"odd\"\"member\""})
+        )
+        .as_str()
+        .unwrap()
+        .contains("RETURN 7"));
+        assert!(call(
+            "get_routine_definition",
+            json!({"routine_name":"\"FB_PACKAGE.FB_DOUBLE\""})
+        )
+        .as_str()
+        .unwrap()
+        .contains("RETURN 99"));
+        assert_eq!(
+            call(
+                "get_routine_parameters",
+                json!({"routine_name":"FB_LEGACY_FIXTURE"})
+            ),
+            json!([
+                {"name":"RETURN_VALUE","data_type":"DOUBLE PRECISION","mode":"OUT","ordinal_position":0},
+                {"name":"ARGUMENT_1","data_type":"CSTRING(40)","mode":"IN","ordinal_position":1}
+            ])
+        );
         assert_eq!(
             call("get_routine_parameters", json!({"routine_name":"FB_ADD"})),
             json!([

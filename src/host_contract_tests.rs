@@ -31,6 +31,15 @@ struct Index {
 struct Routine {
     name: String,
     routine_type: String,
+    identity_args: Option<String>,
+}
+#[derive(Deserialize)]
+struct Trigger {
+    name: String,
+    table_name: String,
+    event: String,
+    timing: String,
+    definition: Option<String>,
 }
 #[derive(Deserialize)]
 struct Parameter {
@@ -94,6 +103,8 @@ struct DataType {
     requires_length: bool,
     requires_precision: bool,
     default_length: Option<String>,
+    #[serde(default)]
+    supports_auto_increment: bool,
 }
 
 pub fn validate_response(method: &str, value: &Value) {
@@ -119,6 +130,7 @@ pub fn validate_response(method: &str, value: &Value) {
         "get_foreign_keys" => decode::<Vec<ForeignKey>>(value),
         "get_indexes" => decode::<Vec<Index>>(value),
         "get_routines" => decode::<Vec<Routine>>(value),
+        "get_triggers" => decode::<Vec<Trigger>>(value),
         "get_routine_parameters" => decode::<Vec<Parameter>>(value),
         "get_schema_snapshot" => decode::<Vec<TableSchema>>(value),
         "get_all_columns_batch" => decode::<std::collections::HashMap<String, Vec<Column>>>(value),

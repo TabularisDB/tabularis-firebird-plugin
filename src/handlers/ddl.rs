@@ -46,7 +46,7 @@ fn literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
-fn fragment(value: &str) -> Result<String, PluginError> {
+pub(super) fn fragment(value: &str) -> Result<String, PluginError> {
     let mut quoted = false;
     let bytes = value.as_bytes();
     let mut i = 0;
