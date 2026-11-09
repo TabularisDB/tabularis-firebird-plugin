@@ -464,13 +464,17 @@ pub fn prepare_statement(
 
 /// Statement information request
 pub fn info_sql(stmt_handle: u32, requested_items: &[u8]) -> Bytes {
+    info_sql_with_buffer(stmt_handle, requested_items, BUFFER_LENGTH)
+}
+
+pub fn info_sql_with_buffer(stmt_handle: u32, requested_items: &[u8], length: u32) -> Bytes {
     let mut req = BytesMut::with_capacity(24 + requested_items.len());
 
     req.put_u32(WireOp::InfoSql as u32);
     req.put_u32(stmt_handle);
     req.put_u32(0); // Incarnation of object
     req.put_wire_bytes(requested_items);
-    req.put_u32(BUFFER_LENGTH);
+    req.put_u32(length);
 
     req.freeze()
 }
@@ -1525,10 +1529,43 @@ pub fn parse_info_sql_affected_rows(data: &mut Bytes) -> Result<usize, FbError> 
     Ok(affected_rows)
 }
 
+/// Plans are a length-prefixed string; never accept a truncated plan as complete.
+pub fn parse_explain_plan(data: &mut Bytes, charset: &Charset) -> Result<String, FbError> {
+    match data.get_u8()? {
+        26 => {}
+        2 => {
+            return Err("Firebird execution plan exceeds the 65535-byte information buffer".into())
+        }
+        _ => return Err("Firebird did not return an explained execution plan".into()),
+    }
+    let length = data.get_u16_le()? as usize;
+    let mut bytes = vec![0; length];
+    data.copy_to_slice(&mut bytes)?;
+    let text = charset.decode(&bytes)?;
+    if data.get_u8()? != ibase::isc_info_end as u8 {
+        return Err("Incomplete Firebird execution plan".into());
+    }
+    Ok(text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use rsfbclient_core::charset::UTF_8;
+
+    #[test]
+    fn explain_plan_rejects_truncation_and_invalid_framing() {
+        let mut valid = Bytes::from_static(b"\x1a\x04\x00PLAN\x01");
+        assert_eq!(parse_explain_plan(&mut valid, &UTF_8).unwrap(), "PLAN");
+        for bytes in [
+            &b"\x02"[..],
+            &b"\x1a\x04\x00PL"[..],
+            &b"\x1a\x04\x00PLAN\x02"[..],
+            &b"\x03"[..],
+        ] {
+            assert!(parse_explain_plan(&mut Bytes::copy_from_slice(bytes), &UTF_8).is_err());
+        }
+    }
 
     fn assert_int128_decoded(expected: i128) {
         let mut response = BytesMut::new();

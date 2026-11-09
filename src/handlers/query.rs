@@ -1,9 +1,9 @@
-//! Connection checks and read-only query execution.
+//! Connection checks, atomic query execution and SQL previews.
 use crate::{
     client::Client,
     error::PluginError,
     models::{inner_params, ConnectionParams},
-    rpc::{error_response, not_implemented, ok_response},
+    rpc::{error_response, ok_response},
     utils::identifiers::quote_identifier,
 };
 use serde_json::{json, Value};
@@ -52,8 +52,15 @@ pub fn execute_query(id: Value, params: &Value) -> Value {
             );
             let query = crate::utils::sql::firebird_query(&query)?;
             let mut client = Client::connect(connection)?;
-            let mut result = client.query(&query, offset, limit)?;
-            result["affected_rows"] = json!(0);
+            let values = match params.get("values") {
+                None | Some(Value::Null) => vec![],
+                Some(Value::Array(values)) => values
+                    .iter()
+                    .map(crate::handlers::crud::sql_parameter)
+                    .collect::<Result<Vec<_>, _>>()?,
+                _ => return Err(PluginError::invalid_params("values must be an array")),
+            };
+            let mut result = client.execute(&query, values, offset, limit, None)?;
             result["pagination"] = match limit {
                 Some(size) => json!({
                     "page": offset / size + 1, "page_size": size,
@@ -64,6 +71,49 @@ pub fn execute_query(id: Value, params: &Value) -> Value {
             };
             result["execution_time_ms"] = json!(start.elapsed().as_millis() as u64);
             Ok(result)
+        })(),
+    )
+}
+
+pub fn execute_query_batch(id: Value, params: &Value) -> Value {
+    respond(
+        id,
+        (|| {
+            let queries = params
+                .get("queries")
+                .and_then(Value::as_array)
+                .filter(|q| !q.is_empty() && q.len() <= 1000)
+                .ok_or_else(|| {
+                    PluginError::invalid_params(
+                        "queries must contain between 1 and 1000 SQL strings",
+                    )
+                })?;
+            let connection = ConnectionParams::from_value(inner_params(params))?;
+            let database = connection.database.as_deref().unwrap_or_default();
+            let queries = queries
+                .iter()
+                .map(|q| {
+                    let sql = q.as_str().filter(|s| !s.trim().is_empty()).ok_or_else(|| {
+                        PluginError::invalid_params("Every batch query must be a non-empty string")
+                    })?;
+                    crate::utils::sql::firebird_query(&crate::utils::sql::unqualify_console_query(
+                        sql, database,
+                    ))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let (offset, limit) = pagination(params)?;
+            let mut client = Client::connect(connection)?;
+            let mut results = client.execute_batch(&queries, offset, limit)?;
+            for entry in &mut results {
+                let result = &mut entry["result"];
+                result["pagination"] = match limit {
+                    Some(size) => {
+                        json!({"page":offset/size+1,"page_size":size,"total_rows":result["total_count"],"has_more":offset.saturating_add(result["rows"].as_array().unwrap().len()as u64)<result["total_count"].as_u64().unwrap()})
+                    }
+                    None => Value::Null,
+                };
+            }
+            Ok(json!(results))
         })(),
     )
 }
@@ -93,10 +143,6 @@ fn pagination(params: &Value) -> Result<(u64, Option<u64>), PluginError> {
         .ok_or_else(|| PluginError::invalid_params("pagination offset is too large"))?;
     Ok((offset, limit))
 }
-pub fn explain_query(id: Value, _params: &Value) -> Value {
-    not_implemented(id, "explain_query")
-}
-
 pub fn get_table_query_template(id: Value, params: &Value) -> Value {
     respond(id, table_query_template(params).map(Value::String))
 }

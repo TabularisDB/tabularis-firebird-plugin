@@ -1,6 +1,6 @@
 ﻿# Firebird — Tabularis Plugin
 
-Read-only Firebird network driver for [Tabularis](https://github.com/TabularisDB/tabularis), built with a locally patched `rsfbclient-rust` wire driver. No Firebird client DLL is required. This is an initial implementation, not a complete driver yet.
+Firebird network driver for [Tabularis](https://github.com/TabularisDB/tabularis), built with a locally patched `rsfbclient-rust` wire driver. No Firebird client DLL is required. The published v0.1.0 is read-only. This development branch builds **unreleased 0.2.0-dev.1 with writes, atomic batches, DDL and prepare-only query plans**; see [DEVELOPMENT.md](DEVELOPMENT.md) for completed work and remaining limitations.
 
 [Install from the Tabularis registry](https://registry.tabularis.dev/plugins/firebird) or download [release v0.1.0](https://github.com/lejyfps/tabularis-firebird-plugin/releases/tag/v0.1.0). The registry lists all five platforms and marks the original Firebird request as fulfilled.
 
@@ -27,7 +27,9 @@ For a local deployment, run a Firebird server on the same PC and connect to `127
 | Method | Status |
 |---|---|
 | `test_connection`, `ping` | Open a real connection and run `SELECT 1 FROM RDB$DATABASE`; failures return JSON-RPC errors. |
-| `execute_query` | Execute a query in a read-only transaction; return columns, rows, `affected_rows: 0`, host pagination, total count and elapsed milliseconds. |
+| `execute_query` | Execute a single SELECT, DML, DDL or procedure statement; commit successful writes, roll back failures, and return rows, affected count, host pagination and elapsed time. Optional `values` bind positional parameters. |
+| `execute_query_batch` | Execute up to 1000 statements atomically; a failure rolls back the whole batch. Explicit interactive transaction statements remain unsupported. |
+| `get_connection_metadata` | Discover the Firebird version and expose the appropriate SQL types; Firebird 4+ adds INT128, DECFLOAT and zoned temporal types. |
 | `get_table_query_template` | Firebird SELECT previews with `FIRST`, quoted identifiers and optional row limits; UPDATE/DELETE previews include `WHERE 1 = 0` and do not enable execution of writes. |
 | `get_databases` | Return the configured database after checking connectivity. Firebird has no server-wide SQL database catalog. |
 | `get_tables`, `get_columns` | User tables, ordered columns, types, nullability, defaults, primary keys, identity flags and comments. |
@@ -37,7 +39,9 @@ For a local deployment, run a Firebird server on the same PC and connect to `127
 | `get_routines`, `get_routine_parameters`, `get_routine_definition` | Top-level stored procedures and functions, ordered IN/OUT parameters, function return values and PSQL bodies. |
 | `get_schema_snapshot` | All user tables with columns and foreign keys for the ER diagram; views and system tables are excluded. |
 | `get_all_columns_batch`, `get_all_foreign_keys_batch` | Metadata grouped by requested table name, reusing one connection per request. |
-| CRUD, DDL, EXPLAIN | Not implemented. The manifest disables editing and table management. |
+| Grid CRUD | Parameterized inserts and complete-primary-key updates/deletes; multi-row grid mutations roll back. |
+| DDL and view management | Generate table/column/index/FK SQL, including composite keys and comments; drop indexes/FKs and create/alter/drop views. PK/identity status changes require explicit SQL. |
+| EXPLAIN | Not implemented yet. |
 
 Each request opens its own connection. `execute_query` accepts the host's positive `page` and `limit` values (`page_size` remains an alias). The response includes `pagination: {page, page_size, total_rows, has_more}`, or `null` for an unpaged request. Pagination streams the full result to compute the total, retaining only the requested page in memory; large queries can therefore be slow. Without a page limit, all rows are returned. Use Firebird's `FIRST`/`SKIP` or `ROWS` clauses to bound expensive queries.
 
@@ -60,7 +64,7 @@ Result representation and remaining limitations:
 - DECFLOAT(16/34) values are decimal strings, preserving all digits and exponents. Special values such as `NaN`, `Infinity` and `-Infinity` are strings too, so the response remains valid JSON.
 - Binary BLOBs are JSON byte arrays; text BLOBs are strings. Arrays and BLOB subtypes other than binary/text remain unsupported and return errors.
 
-The local driver source and its patches are documented in [vendor/rsfbclient-rust/README.md](vendor/rsfbclient-rust/README.md). It is MIT-licensed; releases include [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Queries use an explicit read-only transaction, accept only SELECT statement types, and release statements and transactions on success or error.
+The local driver source and its patches are documented in [vendor/rsfbclient-rust/README.md](vendor/rsfbclient-rust/README.md). It is MIT-licensed; releases include [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Metadata uses read-only transactions. User statements and batches use read-write transactions with explicit commit/rollback and resource cleanup. Unknown commit outcomes are reported explicitly and must not be blindly retried.
 
 ## Tests
 
@@ -102,7 +106,7 @@ For a direct JSON-RPC smoke test without a server:
 '{"jsonrpc":"2.0","method":"test_connection","params":{"params":{}},"id":1}' | cargo run --quiet --bin firebird-plugin
 ```
 
-This must return an invalid-params error rather than success. The generated `just repl` command only echoes request shapes; it does not invoke the driver.
+This must return an invalid-params error rather than success. `just repl` builds and starts the actual driver; enter a method name with empty params or a complete JSON-RPC request with your own connection params.
 
 ## Layout
 
@@ -111,7 +115,7 @@ This must return an invalid-params error rather than success. The generated `jus
 - `src/models.rs`: connection parameter validation.
 - `src/rpc.rs`: JSON-RPC dispatch.
 - `src/handlers/metadata.rs`: table, view and routine catalog discovery.
-- `src/handlers/crud.rs`, `ddl.rs`: remaining scaffold methods.
+- `src/handlers/crud.rs`, `ddl.rs`: parameterized grid writes and Firebird structure management.
 
 ## Publishing
 
@@ -132,12 +136,12 @@ Remaining validation:
 
 Known limits and optional extensions:
 
-- Pagination reads the full result to count rows, and an unpaged query retains all rows. Large-result performance, cancellation and timeout behavior need further validation.
+- Pagination still scans the full result for an exact count. Buffered results and BLOBs have configurable limits; host cancellation and connect/query deadlines are supported and tested on Firebird 3/4/5. Large-result performance needs further validation.
 - Only UTF-8 / dialect 3 network connections are configurable. Embedded mode, TLS configuration, additional character sets and roles are not exposed.
 - Package routines, legacy UDF metadata, arrays and nonstandard BLOB subtypes are unsupported; ambiguous procedure/function names return an error.
 - Dedicated BLOB export/preview RPCs and EXPLAIN are not implemented.
 - Tabularis 0.32 still displays a Create View action for this read-only driver; the plugin rejects view mutations. Hiding that action requires a host UI change.
-- INSERT/UPDATE/DELETE execution, table/index/FK management and view mutations remain disabled for the read-only milestone. SQL previews do not change this.
+- The published v0.1.0 remains read-only. The unreleased development branch enables writes; interactive transactions across requests and native desktop tests of the new editing/DDL flows are still outstanding.
 - The local wire-driver patches need maintenance until equivalent upstream APIs are available.
 
 ## References

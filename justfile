@@ -18,7 +18,7 @@ test:
     cargo test --workspace --locked
 
 # Launch the local REPL that simulates Tabularis JSON-RPC calls over stdio.
-repl:
+repl: build
     cargo run --bin test_plugin
 
 # Run clippy on the workspace.

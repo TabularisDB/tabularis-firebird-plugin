@@ -8,7 +8,6 @@ use serde_json::Value;
 
 #[derive(Debug, Clone)]
 pub struct ConnectionParams {
-    pub driver: Option<String>,
     pub host: Option<String>,
     pub port: Option<u16>,
     pub database: Option<String>,
@@ -16,7 +15,7 @@ pub struct ConnectionParams {
     pub password: Option<String>,
     pub ssl_mode: Option<String>,
     pub connect_timeout_secs: u32,
-    pub query_timeout_secs: u32,
+    pub query_timeout_secs: Option<u32>,
 }
 
 impl ConnectionParams {
@@ -55,7 +54,6 @@ impl ConnectionParams {
             ));
         }
         Ok(Self {
-            driver: get_str("driver"),
             host: get_str("host"),
             port,
             database: get_str("database"),
@@ -63,7 +61,11 @@ impl ConnectionParams {
             password: get_str("password"),
             ssl_mode: get_str("ssl_mode"),
             connect_timeout_secs: seconds(value, "connect_timeout_secs", 10)?,
-            query_timeout_secs: seconds(value, "query_timeout_secs", 0)?,
+            query_timeout_secs: value
+                .get("query_timeout_secs")
+                .filter(|v| !v.is_null())
+                .map(|_| seconds(value, "query_timeout_secs", 0))
+                .transpose()?,
         })
     }
 }
@@ -125,11 +127,11 @@ mod tests {
     fn parses_host_timeouts_and_defaults() {
         let defaults = ConnectionParams::from_value(&json!({})).unwrap();
         assert_eq!(defaults.connect_timeout_secs, 10);
-        assert_eq!(defaults.query_timeout_secs, 0);
+        assert_eq!(defaults.query_timeout_secs, None);
         let explicit =
             ConnectionParams::from_value(&json!({"connect_timeout_secs":0,"query_timeout_secs":2}))
                 .unwrap();
         assert_eq!(explicit.connect_timeout_secs, 0);
-        assert_eq!(explicit.query_timeout_secs, 2);
+        assert_eq!(explicit.query_timeout_secs, Some(2));
     }
 }

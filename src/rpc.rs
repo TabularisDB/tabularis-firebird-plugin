@@ -31,6 +31,7 @@ pub fn handle_line(line: &str) -> Value {
 
         // Metadata.
         "get_databases" => handlers::metadata::get_databases(id, &params),
+        "get_connection_metadata" => handlers::metadata::get_connection_metadata(id, &params),
         "get_schemas" => handlers::metadata::get_schemas(id, &params),
         "get_tables" => handlers::metadata::get_tables(id, &params),
         "get_columns" => handlers::metadata::get_columns(id, &params),
@@ -46,13 +47,14 @@ pub fn handle_line(line: &str) -> Value {
         "get_all_columns_batch" => handlers::metadata::get_all_columns_batch(id, &params),
         "get_all_foreign_keys_batch" => handlers::metadata::get_all_foreign_keys_batch(id, &params),
 
-        // View mutation — not implemented by default.
-        "create_view" | "alter_view" | "drop_view" => not_implemented(id, &method),
+        // View mutation.
+        "create_view" | "alter_view" | "drop_view" => handlers::ddl::mutate(id, &params, &method),
 
         // Query execution and SQL previews.
         "execute_query" => handlers::query::execute_query(id, &params),
+        "execute_query_batch" => handlers::query::execute_query_batch(id, &params),
         "get_table_query_template" => handlers::query::get_table_query_template(id, &params),
-        "explain_query" => handlers::query::explain_query(id, &params),
+        "explain_query" => handlers::explain::explain_query(id, &params),
 
         // CRUD.
         "insert_record" => handlers::crud::insert_record(id, &params),
@@ -61,6 +63,7 @@ pub fn handle_line(line: &str) -> Value {
 
         // DDL.
         "get_create_table_sql" => handlers::ddl::get_create_table_sql(id, &params),
+        "get_drop_table_sql" => handlers::ddl::drop_table_sql(id, &params),
         "get_add_column_sql" => handlers::ddl::get_add_column_sql(id, &params),
         "get_alter_column_sql" => handlers::ddl::get_alter_column_sql(id, &params),
         "get_create_index_sql" => handlers::ddl::get_create_index_sql(id, &params),

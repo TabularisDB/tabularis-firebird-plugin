@@ -4,6 +4,7 @@ use std::sync::{OnceLock, RwLock};
 
 #[derive(Clone, Copy)]
 pub struct Limits {
+    pub query_timeout_secs: u32,
     pub rows: usize,
     pub bytes: usize,
     pub blob_bytes: usize,
@@ -12,6 +13,7 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
+            query_timeout_secs: 0,
             rows: 100_000,
             bytes: 64 * 1024 * 1024,
             blob_bytes: 8 * 1024 * 1024,
@@ -52,6 +54,17 @@ fn parse(settings: &Value) -> Result<Limits, PluginError> {
         }
     };
     Ok(Limits {
+        query_timeout_secs: match settings.get("query_timeout_secs").filter(|v| !v.is_null()) {
+            None => 0,
+            Some(value) => value
+                .as_u64()
+                .and_then(|n| u32::try_from(n).ok())
+                .ok_or_else(|| {
+                    PluginError::invalid_params(
+                        "query_timeout_secs must be a non-negative 32-bit integer",
+                    )
+                })?,
+        },
         rows: number("max_result_rows", 100_000, 1_000_000)?,
         bytes: number("max_result_mib", 64, 1024)? * 1024 * 1024,
         blob_bytes: number("max_blob_mib", 8, 256)? * 1024 * 1024,

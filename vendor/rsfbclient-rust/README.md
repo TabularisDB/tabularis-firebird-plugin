@@ -6,6 +6,10 @@ License: MIT (see LICENSE).
 
 Local functional changes:
 
+- Caller-owned TCP sockets allow connect deadlines and cancellation during authentication; the plugin aborts its dedicated attachment by shutting down that socket.
+- Configurable decoded BLOB limits and single-row prefetch for BLOB results bound their buffering. Affected-row metadata is exposed after execute2/RETURNING.
+- Prepared statements expose Firebird 3+ detailed plans through statement information item 26. The 65535-byte response is checked for truncation before decoding.
+
 - `StmtHandleData::column_names()` exposes prepared output names, even for an empty cursor.
 - Fixed-point NUMERIC/DECIMAL output is requested as VARCHAR(64) instead of DOUBLE, so Firebird converts it to exact decimal text before transmission. Ordinary FLOAT/DOUBLE remain numeric, and unscaled BIGINT/INT128 keep their integer decoding.
 - DECFLOAT(16/34) is requested as VARCHAR(64), preserving digits, exponents and special values.

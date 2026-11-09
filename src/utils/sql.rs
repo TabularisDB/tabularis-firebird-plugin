@@ -32,11 +32,11 @@ pub fn firebird_query(sql: &str) -> Result<String, PluginError> {
     terminal_limit(sql)
 }
 
-fn terminal_limit(sql: &str) -> Result<String, PluginError> {
+fn top_level_words(sql: &str) -> Vec<(usize, &str)> {
     let bytes = sql.as_bytes();
     let mut i = 0;
     let mut depth = 0usize;
-    let mut limit = None;
+    let mut words = vec![];
     while i < bytes.len() {
         match bytes[i] {
             b'-' if bytes.get(i + 1) == Some(&b'-') => {
@@ -106,14 +106,43 @@ fn terminal_limit(sql: &str) -> Result<String, PluginError> {
                 {
                     i += 1;
                 }
-                if depth == 0 && sql[start..i].eq_ignore_ascii_case("LIMIT") {
-                    limit = Some(start);
+                if depth == 0 {
+                    words.push((start, &sql[start..i]));
                 }
             }
             _ => i += 1,
         }
     }
-    let Some(start) = limit else {
+    words
+}
+
+pub fn is_dml(sql: &str) -> bool {
+    top_level_words(sql)
+        .into_iter()
+        .find_map(|(_, word)| {
+            if ["INSERT", "UPDATE", "DELETE", "MERGE"]
+                .iter()
+                .any(|v| word.eq_ignore_ascii_case(v))
+            {
+                Some(true)
+            } else if ["SELECT", "EXECUTE", "CREATE", "ALTER", "DROP", "RECREATE"]
+                .iter()
+                .any(|v| word.eq_ignore_ascii_case(v))
+            {
+                Some(false)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(false)
+}
+
+fn terminal_limit(sql: &str) -> Result<String, PluginError> {
+    let start = top_level_words(sql)
+        .into_iter()
+        .rfind(|(_, word)| word.eq_ignore_ascii_case("LIMIT"))
+        .map(|(start, _)| start);
+    let Some(start) = start else {
         return Ok(sql.into());
     };
     let tail = sql[start + 5..].trim();
@@ -149,6 +178,15 @@ fn terminal_limit(sql: &str) -> Result<String, PluginError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn distinguishes_procedure_results_from_returning_dml() {
+        assert!(is_dml("/* SELECT */ update T set C=1 returning C"));
+        assert!(is_dml(
+            "WITH N AS (SELECT 1 FROM RDB$DATABASE) UPDATE T SET C=1 RETURNING C"
+        ));
+        assert!(!is_dml("EXECUTE PROCEDURE P('UPDATE')"));
+        assert!(!is_dml("SELECT 'INSERT' FROM T"));
+    }
     #[test]
     fn unqualifies_only_the_host_console_query_for_the_current_database() {
         assert_eq!(

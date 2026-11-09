@@ -70,7 +70,7 @@ IpcName = tabularis_test_$Port
     $env:ISC_PASSWORD = $testPassword
     & (Join-Path $serverDir 'isql.exe') -bail -quiet -input tests/fixture.sql "127.0.0.1/${Port}:$databasePath"
     if ($LASTEXITCODE -ne 0) { throw 'Firebird fixture creation failed' }
-    $testArguments = @('--ignored')
+    $testArguments = @('--ignored', '--test-threads=1')
     if ($Version -eq '3') {
         Write-Host 'Skipping Firebird 4+ types (INT128 decimals, time zones, DECFLOAT) on Firebird 3.'
         $testArguments += @('--skip', '_firebird4')

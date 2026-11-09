@@ -147,6 +147,28 @@ pub struct StmtHandleData {
 }
 
 impl RustFbClient {
+    /// Obtain the prepared statement's detailed plan without executing it (Firebird 3+).
+    pub fn explain_plan(&mut self, statement: &StmtHandleData) -> Result<String, FbError> {
+        self.conn
+            .as_mut()
+            .map(|connection| {
+                connection.socket.write_all(&info_sql_with_buffer(
+                    statement.handle.0,
+                    &[26],
+                    65535,
+                ))?;
+                connection.socket.flush()?;
+                parse_explain_plan(&mut connection.read_response()?.data, &connection.charset)
+            })
+            .unwrap_or_else(err_client_not_connected)
+    }
+    /// Read the server's DML count after execute2/RETURNING.
+    pub fn affected_rows(&mut self, statement: &StmtHandleData) -> Result<usize, FbError> {
+        self.conn
+            .as_mut()
+            .map(|c| c.affected_rows(statement))
+            .unwrap_or_else(err_client_not_connected)
+    }
     /// Bound each decoded BLOB before buffering its content.
     pub fn set_blob_limit(&mut self, bytes: usize) {
         if let Some(conn) = self.conn.as_mut() {
@@ -1031,6 +1053,10 @@ impl FirebirdWireConnection {
 
         self.read_response()?;
 
+        self.affected_rows(stmt_handle)
+    }
+
+    fn affected_rows(&mut self, stmt_handle: &StmtHandleData) -> Result<usize, FbError> {
         // Get affected rows
         self.socket.write_all(&info_sql(
             stmt_handle.handle.0,

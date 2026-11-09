@@ -43,6 +43,43 @@ pub fn get_databases(id: Value, params: &Value) -> Value {
     )
 }
 
+pub fn get_connection_metadata(id: Value, params: &Value) -> Value {
+    respond(
+        id,
+        (|| {
+            let mut client = Client::connect(ConnectionParams::from_value(inner_params(params))?)?;
+            let engine = client.query(
+                "SELECT RDB$GET_CONTEXT('SYSTEM','ENGINE_VERSION') FROM RDB$DATABASE",
+                0,
+                None,
+            )?;
+            let version = engine["rows"][0][0]
+                .as_str()
+                .ok_or_else(|| PluginError::internal("Missing Firebird engine version"))?;
+            let manifest: Value = serde_json::from_str(include_str!("../../.tabularium"))
+                .map_err(|e| PluginError::internal(e.to_string()))?;
+            let mut types = manifest["data_types"].as_array().unwrap().clone();
+            if version
+                .split('.')
+                .next()
+                .and_then(|v| v.parse::<u32>().ok())
+                .is_some_and(|v| v >= 4)
+            {
+                for name in [
+                    "INT128",
+                    "DECFLOAT(16)",
+                    "DECFLOAT(34)",
+                    "TIME WITH TIME ZONE",
+                    "TIMESTAMP WITH TIME ZONE",
+                ] {
+                    types.push(json!({"name":name,"category":if name.contains("TIME"){"date"}else{"numeric"},"requires_length":false,"requires_precision":false}));
+                }
+            }
+            Ok(json!({"data_types":types}))
+        })(),
+    )
+}
+
 pub fn get_schemas(id: Value, _params: &Value) -> Value {
     // Only meaningful if `capabilities.schemas` is true in the `.tabularium` manifest.
     ok_response(id, json!([]))
@@ -545,6 +582,9 @@ mod tests {
         };
         assert_eq!(call("test_connection", json!({})), json!({"success": true}));
         assert_eq!(call("ping", json!({})), Value::Null);
+        let discovered = call("get_connection_metadata", json!({}));
+        crate::host_contract_tests::validate_response("get_connection_metadata", &discovered);
+        assert!(discovered["data_types"].as_array().unwrap().len() >= 15);
         assert_eq!(
             call("get_databases", json!({})),
             json!([config["database"]])

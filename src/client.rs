@@ -1,11 +1,11 @@
-//! One read-only Firebird connection per request.
+//! Dedicated Firebird attachments, bounded cursors and explicit transaction ownership.
 use crate::control::{self, Control, Deadline};
 use crate::{error::PluginError, models::ConnectionParams};
 use rsfbclient_core::{
     charset, Dialect, FirebirdClientDbOps, FirebirdClientSqlOps, FreeStmtOp, Row, SqlType,
     StmtType, TrDataAccessMode, TrLockResolution, TrOp, TransactionConfiguration,
 };
-use rsfbclient_rust::{DbHandle, RustFbClient, RustFbClientAttachmentConfig};
+use rsfbclient_rust::{DbHandle, RustFbClient, RustFbClientAttachmentConfig, TrHandle};
 use serde_json::{json, Value};
 use std::{
     net::{TcpStream, ToSocketAddrs},
@@ -18,6 +18,7 @@ pub struct Client {
     database: DbHandle,
     control: Arc<Control>,
     query_timeout_secs: u32,
+    batch_transaction: Option<TrHandle>,
 }
 impl Client {
     pub fn connect(params: ConnectionParams) -> Result<Self, PluginError> {
@@ -85,7 +86,10 @@ impl Client {
             wire,
             database,
             control,
-            query_timeout_secs: params.query_timeout_secs,
+            query_timeout_secs: params
+                .query_timeout_secs
+                .unwrap_or(crate::limits::current().query_timeout_secs),
+            batch_transaction: None,
         })
     }
 
@@ -97,6 +101,54 @@ impl Client {
             ));
         }
         Ok(())
+    }
+
+    pub fn explain(&mut self, sql: &str) -> Result<String, PluginError> {
+        self.control.check()?;
+        let _deadline = Deadline::query(&self.control, self.query_timeout_secs);
+        let mut transaction = self
+            .wire
+            .begin_transaction(
+                &mut self.database,
+                TransactionConfiguration {
+                    data_access: TrDataAccessMode::ReadOnly,
+                    lock_resolution: TrLockResolution::NoWait,
+                    ..TransactionConfiguration::default()
+                },
+            )
+            .map_err(firebird_error)?;
+        let result = (|| {
+            let (kind, mut statement) = self
+                .wire
+                .prepare_statement(&mut self.database, &mut transaction, Dialect::D3, sql)
+                .map_err(firebird_error)?;
+            let plan = if matches!(
+                kind,
+                StmtType::Select
+                    | StmtType::SelectForUpd
+                    | StmtType::Insert
+                    | StmtType::Update
+                    | StmtType::Delete
+                    | StmtType::ExecProcedure
+            ) {
+                self.wire.explain_plan(&statement).map_err(firebird_error)
+            } else {
+                Err(PluginError::invalid_params(
+                    "Execution plans require a query or DML statement",
+                ))
+            };
+            let closed = self
+                .wire
+                .free_statement(&mut statement, FreeStmtOp::Drop)
+                .map_err(firebird_error);
+            plan.and_then(|plan| closed.map(|_| plan))
+        })();
+        let rolled_back = self
+            .wire
+            .transaction_operation(&mut transaction, TrOp::Rollback)
+            .map_err(firebird_error);
+        self.control.check()?;
+        result.and_then(|plan| rolled_back.map(|_| plan))
     }
 
     pub fn query(
@@ -129,39 +181,125 @@ impl Client {
         offset: u64,
         limit: Option<u64>,
     ) -> Result<Value, PluginError> {
-        let mut transaction = self
-            .wire
-            .begin_transaction(
-                &mut self.database,
-                TransactionConfiguration {
-                    data_access: TrDataAccessMode::ReadOnly,
-                    lock_resolution: TrLockResolution::NoWait,
-                    ..TransactionConfiguration::default()
-                },
-            )
-            .map_err(firebird_error)?;
+        self.statement(sql, params, offset, limit, false, None)
+    }
+
+    pub fn execute(
+        &mut self,
+        sql: &str,
+        params: Vec<SqlType>,
+        offset: u64,
+        limit: Option<u64>,
+        max_affected: Option<usize>,
+    ) -> Result<Value, PluginError> {
+        self.control.check()?;
+        let _deadline = Deadline::query(&self.control, self.query_timeout_secs);
+        // Commit errors after a successful execute have an unknown outcome: never retry.
+        let result = self.statement(sql, params, offset, limit, true, max_affected);
+        if let Err(error) = &result {
+            if error.code != -32002 {
+                self.control.check()?;
+            }
+        }
+        result
+    }
+
+    fn statement(
+        &mut self,
+        sql: &str,
+        params: Vec<SqlType>,
+        offset: u64,
+        limit: Option<u64>,
+        writable: bool,
+        max_affected: Option<usize>,
+    ) -> Result<Value, PluginError> {
+        let pinned = self.batch_transaction.is_some();
+        let mut transaction = match self.batch_transaction.take() {
+            Some(transaction) => transaction,
+            None => self
+                .wire
+                .begin_transaction(
+                    &mut self.database,
+                    TransactionConfiguration {
+                        data_access: if writable {
+                            TrDataAccessMode::ReadWrite
+                        } else {
+                            TrDataAccessMode::ReadOnly
+                        },
+                        lock_resolution: TrLockResolution::NoWait,
+                        ..TransactionConfiguration::default()
+                    },
+                )
+                .map_err(firebird_error)?,
+        };
         let result = (|| {
             let (kind, mut statement) = self
                 .wire
                 .prepare_statement(&mut self.database, &mut transaction, Dialect::D3, sql)
                 .map_err(firebird_error)?;
             let result = (|| {
-                if kind != StmtType::Select {
+                if !writable && kind != StmtType::Select {
                     return Err(PluginError::invalid_params(
                         "Only read-only SELECT statements are supported",
                     ));
                 }
+                if matches!(
+                    kind,
+                    StmtType::StartTrans
+                        | StmtType::Commit
+                        | StmtType::Rollback
+                        | StmtType::Savepoint
+                ) {
+                    return Err(PluginError::invalid_params("Explicit transaction statements are not supported by per-request execution"));
+                }
                 let columns = statement.column_names();
-                self.wire
-                    .execute(&mut self.database, &mut transaction, &mut statement, params)
-                    .map_err(firebird_error)?;
-                let cursor = std::iter::from_fn(|| {
-                    self.wire
-                        .fetch(&mut self.database, &mut transaction, &mut statement)
-                        .map(|row| row.map(|cols| Row { cols }))
-                        .transpose()
-                });
-                collect_rows(cursor, columns, offset, limit)
+                let rows = matches!(kind, StmtType::Select | StmtType::SelectForUpd);
+                let (mut result, affected) = if !rows && !columns.is_empty() {
+                    let output = self
+                        .wire
+                        .execute2(&mut self.database, &mut transaction, &mut statement, params)
+                        .map_err(firebird_error)?;
+                    let affected = self
+                        .wire
+                        .affected_rows(&statement)
+                        .map_err(firebird_error)?;
+                    let output = if affected == 0
+                        && (kind != StmtType::ExecProcedure || crate::utils::sql::is_dml(sql))
+                    {
+                        None
+                    } else {
+                        Some(Ok(Row { cols: output }))
+                    };
+                    let result = collect_rows(output.into_iter(), columns, offset, limit)?;
+                    (result, affected)
+                } else {
+                    let affected = self
+                        .wire
+                        .execute(&mut self.database, &mut transaction, &mut statement, params)
+                        .map_err(firebird_error)?;
+                    let result = if rows {
+                        let cursor = std::iter::from_fn(|| {
+                            self.wire
+                                .fetch(&mut self.database, &mut transaction, &mut statement)
+                                .map(|row| row.map(|cols| Row { cols }))
+                                .transpose()
+                        });
+                        collect_rows(cursor, columns, offset, limit)?
+                    } else {
+                        json!({"columns":[],"rows":[],"total_count":0})
+                    };
+                    (result, if rows { 0 } else { affected })
+                };
+                if max_affected.is_some_and(|max| affected > max) {
+                    return Err(PluginError::invalid_params(
+                        "Mutation matched multiple rows; all changes rolled back",
+                    ));
+                }
+                if writable {
+                    result["affected_rows"] = json!(affected);
+                }
+                self.control.check()?;
+                Ok(result)
             })();
             let closed = self
                 .wire
@@ -169,12 +307,75 @@ impl Client {
                 .map_err(firebird_error);
             result.and_then(|result| closed.map(|_| result))
         })();
-        // Release resources on both successful queries and prepare/execute/fetch failures.
-        let rolled_back = self
-            .wire
-            .transaction_operation(&mut transaction, TrOp::Rollback)
-            .map_err(firebird_error);
-        result.and_then(|result| rolled_back.map(|_| result))
+        if pinned && result.is_ok() {
+            self.batch_transaction = Some(transaction);
+            return result;
+        }
+        // Failed execution/fetch/validation always rolls back; successful writes commit once.
+        let operation = if writable && result.is_ok() {
+            TrOp::Commit
+        } else {
+            TrOp::Rollback
+        };
+        let finalized = self.wire.transaction_operation(&mut transaction, operation)
+            .map_err(|error| if writable && result.is_ok() { PluginError {code:-32002,message:format!("Commit failed; outcome is unknown. Check the data before retrying: {error}")} } else { firebird_error(error) });
+        result.and_then(|result| finalized.map(|_| result))
+    }
+
+    pub fn execute_batch(
+        &mut self,
+        queries: &[String],
+        offset: u64,
+        limit: Option<u64>,
+    ) -> Result<Vec<Value>, PluginError> {
+        self.control.check()?;
+        let _deadline = Deadline::query(&self.control, self.query_timeout_secs);
+        self.batch_transaction = Some(
+            self.wire
+                .begin_transaction(
+                    &mut self.database,
+                    TransactionConfiguration {
+                        data_access: TrDataAccessMode::ReadWrite,
+                        lock_resolution: TrLockResolution::NoWait,
+                        ..TransactionConfiguration::default()
+                    },
+                )
+                .map_err(firebird_error)?,
+        );
+        let bounds = crate::limits::current();
+        let mut bytes = 0usize;
+        let mut rows = 0usize;
+        let result = (|| {
+            let mut results = vec![];
+            for (index, query) in queries.iter().enumerate() {
+                let started = Instant::now();
+                let result = self
+                    .execute(query, vec![], offset, limit, None)
+                    .map_err(|error| PluginError {
+                        code: error.code,
+                        message: format!(
+                            "Batch statement {} failed; the batch was rolled back: {}",
+                            index + 1,
+                            error.message
+                        ),
+                    })?;
+                bytes = bytes.saturating_add(serde_json::to_vec(&result).unwrap().len());
+                rows = rows.saturating_add(result["rows"].as_array().unwrap().len());
+                if bytes > bounds.bytes || rows > bounds.rows {
+                    return Err(PluginError::internal(
+                        "Combined batch results exceed configured limits; batch rolled back",
+                    ));
+                }
+                results.push(json!({"result":result,"error":null,"execution_time_ms":started.elapsed().as_secs_f64()*1000.0}));
+            }
+            self.control.check()?;
+            Ok(results)
+        })();
+        if let Some(mut transaction) = self.batch_transaction.take() {
+            let commit = result.is_ok();
+            self.wire.transaction_operation(&mut transaction,if commit{TrOp::Commit}else{TrOp::Rollback}).map_err(|error|if commit{PluginError{code:-32002,message:format!("Batch commit failed; outcome is unknown. Check the data before retrying: {error}")}}else{firebird_error(error)})?;
+        }
+        result
     }
 
     pub fn query_objects(
@@ -203,6 +404,11 @@ impl Client {
 
 impl Drop for Client {
     fn drop(&mut self) {
+        if let Some(mut transaction) = self.batch_transaction.take() {
+            let _ = self
+                .wire
+                .transaction_operation(&mut transaction, TrOp::Rollback);
+        }
         if self.control.check().is_ok() {
             let _ = self.wire.detach_database(&mut self.database);
         }
@@ -335,6 +541,7 @@ mod tests {
     #[test]
     fn limits_buffered_rows_and_bytes_without_returning_partial_results() {
         let bounds = crate::limits::Limits {
+            query_timeout_secs: 0,
             rows: 1,
             bytes: 1024,
             blob_bytes: 3,

@@ -60,6 +60,27 @@ struct TableSchema {
     foreign_keys: Vec<ForeignKey>,
 }
 
+#[derive(Deserialize)]
+struct BatchResult {
+    result: Option<QueryResult>,
+    error: Option<String>,
+    execution_time_ms: Option<f64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConnectionMetadata {
+    data_types: Vec<DataType>,
+}
+#[derive(Deserialize)]
+struct DataType {
+    name: String,
+    category: String,
+    requires_length: bool,
+    requires_precision: bool,
+    default_length: Option<String>,
+}
+
 pub fn validate_response(method: &str, value: &Value) {
     fn decode<T: serde::de::DeserializeOwned>(value: &Value) {
         serde_json::from_value::<T>(value.clone())
@@ -67,6 +88,8 @@ pub fn validate_response(method: &str, value: &Value) {
     }
     match method {
         "execute_query" => decode::<QueryResult>(value),
+        "execute_query_batch" => decode::<Vec<BatchResult>>(value),
+        "get_connection_metadata" => decode::<ConnectionMetadata>(value),
         "get_columns" | "get_view_columns" => decode::<Vec<Column>>(value),
         "get_foreign_keys" => decode::<Vec<ForeignKey>>(value),
         "get_indexes" => decode::<Vec<Index>>(value),

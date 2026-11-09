@@ -1,6 +1,7 @@
 {
   "name": "firebird",
-  "version": "0.1.0",
+  "version": "0.2.0-dev.1",
+  "connection_metadata": true,
   "description": "Tabularis driver plugin for Firebird",
   "kind": "driver",
   "engine": "firebird",
@@ -25,30 +26,36 @@
     "supports_ssl": false,
     "identifier_quote": "\"",
     "alter_primary_key": false,
-    "alter_column": false,
-    "create_foreign_keys": false,
-    "manage_tables": false,
-    "readonly": true,
-    "table_query_templates": true,
-    "query_timeout": true
+    "alter_column": true,
+    "create_foreign_keys": true,
+    "manage_tables": true,
+    "column_comments": true,
+    "drop_table_sql": true,
+    "readonly": false,
+    "explain": true,
+    "table_query_templates": true
   },
   "settings": [
+    {"key":"query_timeout_secs","label":"Query timeout in seconds (0 = unlimited)","type":"number","default":0},
     {"key":"max_result_rows","label":"Maximum buffered result rows","type":"number","default":100000},
     {"key":"max_result_mib","label":"Maximum buffered result size (MiB)","type":"number","default":64},
     {"key":"max_blob_mib","label":"Maximum BLOB size per cell (MiB)","type":"number","default":8}
   ],
   "data_types": [
-    {
-      "name": "INTEGER",
-      "category": "numeric",
-      "requires_length": false,
-      "requires_precision": false
-    },
-    {
-      "name": "TEXT",
-      "category": "string",
-      "requires_length": false,
-      "requires_precision": false
-    }
+    {"name":"SMALLINT","category":"numeric","requires_length":false,"requires_precision":false},
+    {"name":"INTEGER","category":"numeric","requires_length":false,"requires_precision":false},
+    {"name":"BIGINT","category":"numeric","requires_length":false,"requires_precision":false},
+    {"name":"FLOAT","category":"numeric","requires_length":false,"requires_precision":false},
+    {"name":"DOUBLE PRECISION","category":"numeric","requires_length":false,"requires_precision":false},
+    {"name":"NUMERIC","category":"numeric","requires_length":false,"requires_precision":true},
+    {"name":"DECIMAL","category":"numeric","requires_length":false,"requires_precision":true},
+    {"name":"CHAR","category":"string","requires_length":true,"requires_precision":false,"default_length":"1"},
+    {"name":"VARCHAR","category":"string","requires_length":true,"requires_precision":false,"default_length":"255"},
+    {"name":"BOOLEAN","category":"boolean","requires_length":false,"requires_precision":false},
+    {"name":"DATE","category":"date","requires_length":false,"requires_precision":false},
+    {"name":"TIME","category":"date","requires_length":false,"requires_precision":false},
+    {"name":"TIMESTAMP","category":"date","requires_length":false,"requires_precision":false},
+    {"name":"BLOB SUB_TYPE TEXT","category":"string","requires_length":false,"requires_precision":false},
+    {"name":"BLOB SUB_TYPE BINARY","category":"binary","requires_length":false,"requires_precision":false}
   ]
 }
