@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    uses: ./.github/workflows/packages.yml
+    uses: ./.github/workflows/check.yml
   release:
     name: Publish GitHub release
     needs: build
