@@ -63,6 +63,10 @@ pub fn handle_line(line: &str) -> Value {
         "execute_query" => handlers::query::execute_query(id, &params),
         "execute_query_batch" => handlers::query::execute_query_batch(id, &params),
         "release_session" => handlers::query::release_session(id, &params),
+        "get_session_state" => match crate::sessions::state(&params) {
+            Ok(state) => ok_response(id, state),
+            Err(error) => error_response(id, error.code, &error.message),
+        },
         "get_table_query_template" => handlers::query::get_table_query_template(id, &params),
         "explain_query" => handlers::explain::explain_query(id, &params),
 

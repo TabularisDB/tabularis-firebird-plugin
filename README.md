@@ -6,7 +6,7 @@ Development and future releases are maintained in [TabularisDB/tabularis-firebir
 
 Download the current [v0.2.0-beta.1 prerelease](https://github.com/TabularisDB/tabularis-firebird-plugin/releases/tag/v0.2.0-beta.1) for the new functionality. Its release notes describe compatibility changes and outstanding validation.
 
-[Install from the Tabularis registry](https://registry.tabularis.dev/plugins/firebird) or download the historical [release v0.1.0](https://github.com/lejyfps/tabularis-firebird-plugin/releases/tag/v0.1.0) from the original repository. The registry lists all five platforms and marks the original Firebird request as fulfilled.
+The [Tabularis registry entry](https://registry.tabularis.dev/plugins/firebird) is managed separately from GitHub releases; end-to-end registry install/update/uninstall verification remains on the release checklist. The historical [release v0.1.0](https://github.com/lejyfps/tabularis-firebird-plugin/releases/tag/v0.1.0) remains available from the original repository.
 
 ## Build and install
 
@@ -38,6 +38,7 @@ For a local deployment, run a Firebird server on the same PC and connect to `127
 | `execute_query` | Execute a single SELECT, DML, DDL or procedure statement; commit successful writes, roll back failures, and return rows, affected count, host pagination and elapsed time. Optional `values` bind positional parameters. |
 | `execute_query_batch` | Execute up to 1000 statements atomically by default; with `session_id`, explicit BEGIN/COMMIT/ROLLBACK boundaries are honored across calls. |
 | Interactive sessions | Keep an explicit transaction on its editor's attachment; support savepoints and retaining operations. Release, errors, cancellation, timeouts and process EOF roll back pending changes. |
+| `get_session_state` | Return `{in_transaction}` for a required `session_id`, without opening a connection or executing SQL. Missing sessions report false. Compatible hosts can refresh their indicator after cancellation. |
 | `get_connection_metadata` | Discover the Firebird version and expose the appropriate SQL types; Firebird 4+ adds INT128, DECFLOAT and zoned temporal types. |
 | `get_table_query_template` | Firebird SELECT previews with `FIRST`, quoted identifiers and optional row limits; UPDATE/DELETE previews include `WHERE 1 = 0` and do not enable execution of writes. |
 | `get_databases` | Return the configured database after checking connectivity. Firebird has no server-wide SQL database catalog. |
@@ -64,7 +65,7 @@ The host's table **New Console** action also emits `SELECT * FROM "database"."ta
 
 Routine discovery includes public package members and legacy external UDFs. Package identities use separately quoted components such as `"PACKAGE"."ROUTINE"`; a literal dot inside a top-level name remains one quoted identifier. Private package members are excluded. A function's return value is an `OUT` parameter named `RETURN_VALUE`, listed before its inputs; unnamed legacy inputs use `ARGUMENT_n`. Parameters include the host-required `ordinal_position`. External routines without stored PSQL source return an explicit error for definition requests; packaged routines can return the containing package body when individual source is unavailable. Colliding procedure/function names carry `identity_args: "PROCEDURE"` or `"FUNCTION"`, which recent hosts forward on parameter/definition requests. Older clients without that discriminator receive an ambiguity error rather than another routine's data. Discovery does not execute routines.
 
-Routine-management RPCs are implemented, but their UI capability remains disabled: the host's generic statement splitter can break Firebird PSQL at internal semicolons. The complete statement must reach `execute_query` intact. Native editor integration needs a Firebird-aware splitter/execution path before enabling these menus; selecting a different engine's SQL dialect would also change unrelated syntax rules.
+Routine-management RPCs are implemented, but their UI capability remains disabled: released hosts can break Firebird PSQL at internal semicolons. [Host PR #1462](https://github.com/TabularisDB/tabularis/pull/1462) adds opt-in `sql_syntax.psql_blocks` support, tested through the actual editor splitter and this plugin against Firebird 3/4/5. The new flag and routine menus must wait for a compatible host release, deployed registry schema and native editor validation. The plugin explicitly extends generic SQL syntax. The complete PSQL statement must reach `execute_query` intact.
 
 The runtime contract follows Tabularis's actual driver implementation: view details use `view_name`, routine details use `routine_name`, foreign keys use `name`/`ref_table`/`ref_column`/`seq_in_fk`, and indexes return one row per segment with `name`/`column_name`/`seq_in_index`. The older `view` and `routine` request names remain accepted. Some plugin-guide examples show older shapes; live tests deserialize responses against the required host fields in `src/host_contract_tests.rs`.
 
@@ -103,6 +104,17 @@ For a repeatable live test on Windows:
 The script downloads the official portable Firebird 3.0.14, 4.0.7 or 5.0.4 ZIP (verifying its pinned SHA-256), creates an isolated fixture database and random local test credentials under the ignored `target/firebird-test` directory, binds to `127.0.0.1`, and runs live catalog/query tests plus a stdio test of the executable. Its `finally` block stops its server and deletes the entire test directory, including the download, extracted server, database, lock files and credentials, on success or failure. It installs no service. It refuses to overwrite a pre-existing test directory. Windows CI runs the same script for all three versions.
 
 Linux x64 CI runs the same live Rust suites with `bash tests/live-firebird.sh 3` (or `4`/`5`), using official Firebird Docker images pinned by digest. This requires Docker, Python 3, OpenSSL and Rust on the Linux runner. The script removes its container, anonymous data volume, temporary credentials and any image it newly pulled. The Windows development PC does not need Docker.
+
+To verify a host checkout containing the companion PSQL patch, install that host's dependencies with its pinned pnpm version and run the following from this plugin repository (Node must be on PATH):
+
+```powershell
+./tests/live-firebird.ps1 -Version 5 -AfterTests {
+    node tests/host-psql-smoke.mjs ../tabularis
+    if ($LASTEXITCODE -ne 0) { throw 'Host PSQL smoke test failed' }
+}
+```
+
+The smoke test bundles the host's actual `resolveSqlSyntax` and `splitBatches`, then executes a procedure with a local function, a function, a trigger, package declarations/body and an EXECUTE BLOCK through plugin stdio. It checks results and session-state transitions. Use only the disposable fixture; the surrounding script removes its server and files even if this additional test fails. This does not replace native desktop UI testing.
 
 Post-beta.1 regression coverage also exercises 100,001-row results, default-limit BLOB overflow, combined-batch limit rollback, eight parallel writers, row-lock conflicts, server-terminated attachments and loss of an already committed transaction's reply. Stdio tests verify queue overload, duplicate IDs and cancellation of queued work. These fixed-size correctness tests do not establish sustained throughput or a strict RSS bound.
 

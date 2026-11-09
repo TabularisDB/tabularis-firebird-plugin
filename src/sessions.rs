@@ -126,6 +126,17 @@ pub fn release(params: &Value) -> Result<Value, PluginError> {
     Ok(Value::Null)
 }
 
+pub fn state(params: &Value) -> Result<Value, PluginError> {
+    let id = id(params)?.ok_or_else(|| PluginError::invalid_params("session_id is required"))?;
+    let in_transaction = SESSIONS.with(|sessions| {
+        sessions
+            .borrow()
+            .get(id)
+            .is_some_and(|session| session.client.in_transaction())
+    });
+    Ok(json!({"in_transaction": in_transaction}))
+}
+
 #[derive(Debug)]
 enum Command {
     Begin(TransactionConfiguration),
@@ -320,6 +331,11 @@ mod tests {
     use super::*;
     #[test]
     fn validates_session_ids_and_attachment_identity() {
+        assert!(state(&json!({})).is_err());
+        assert_eq!(
+            state(&json!({"session_id":"unknown"})).unwrap(),
+            json!({"in_transaction":false})
+        );
         for value in [json!(false), json!(""), json!("\0"), json!("a".repeat(257))] {
             assert!(id(&json!({"session_id":value})).is_err());
         }
@@ -465,6 +481,10 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(ok("BEGIN", "A")["in_transaction"], true);
+        assert_eq!(
+            state(&json!({"session_id":"A"})).unwrap()["in_transaction"],
+            true
+        );
         let identity = ok(
             "SELECT CURRENT_CONNECTION, CURRENT_TRANSACTION FROM RDB$DATABASE",
             "A",
@@ -555,6 +575,10 @@ mod tests {
         let timeout = call(heavy, "A", &timed).0;
         assert_eq!(timeout["error_code"], -32001);
         assert_eq!(timeout["in_transaction"], false);
+        assert_eq!(
+            state(&json!({"session_id":"A"})).unwrap()["in_transaction"],
+            false
+        );
         assert_eq!(count(), 3);
         ok("BEGIN", "A");
         ok(&format!("INSERT INTO {table} VALUES(4)"), "A");
