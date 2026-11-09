@@ -16,7 +16,7 @@ Restart Tabularis or toggle the plugin in Settings. Configure:
 - Database: a database alias or a file path **on the server**, not on the plugin machine.
 - Username and password: an existing Firebird database user. No default password is assumed.
 
-The connection uses UTF-8 and SQL dialect 3. A local Firebird server is supported over TCP; embedded mode and TLS configuration are not implemented. Firebird versions have not yet been validated against a live server.
+The connection uses UTF-8 and SQL dialect 3. A local Firebird server is supported over TCP; embedded mode and TLS configuration are not implemented. Live integration tests pass against Firebird 5.0.4 on Windows. Other versions are not yet validated; the metadata queries require Firebird 3+ catalogs.
 
 ## Implemented
 
@@ -24,7 +24,12 @@ The connection uses UTF-8 and SQL dialect 3. A local Firebird server is supporte
 |---|---|
 | `test_connection`, `ping` | Open a real connection and run `SELECT 1 FROM RDB$DATABASE`; failures return JSON-RPC errors. |
 | `execute_query` | Execute a query in a read-only transaction; return columns, rows, total count and elapsed milliseconds. |
-| Metadata methods | Still scaffold placeholders. The sidebar is not populated yet. |
+| `get_databases` | Return the configured database after checking connectivity. Firebird has no server-wide SQL database catalog. |
+| `get_tables`, `get_columns` | User tables, ordered columns, types, nullability, defaults, primary keys, identity flags and comments. |
+| `get_indexes`, `get_foreign_keys` | Ordered index columns, unique/primary flags, expression source and composite foreign-key mappings with update/delete rules. |
+| Schemas | Empty list; Firebird does not use SQL schemas. |
+| Views, routines | Not implemented; disabled in the manifest. |
+| Batch metadata / schema snapshot | Return method-not-found so the host can fall back to standard metadata calls. |
 | CRUD, DDL, EXPLAIN | Not implemented. The manifest disables editing and table management. |
 
 Each request opens its own connection. `execute_query` accepts optional positive `page` and `page_size` values. Pagination streams the full result to compute `total_count`, retaining only the requested page in memory; large queries can therefore be slow. Without `page_size`, all rows are returned. Use Firebird's `FIRST`/`SKIP` or `ROWS` clauses to bound expensive queries.
@@ -47,6 +52,16 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo fmt --all -- --check
 ```
 
+For a repeatable live test on Windows:
+
+```powershell
+./tests/live-firebird.ps1
+# Optional if port 13050 is occupied:
+./tests/live-firebird.ps1 -Port 13051
+```
+
+The script downloads the official portable Firebird 5.0.4 ZIP (verifying a pinned SHA-256), creates an isolated fixture database and random local test credentials under the ignored `target/firebird-test` directory, binds to `127.0.0.1`, runs live catalog/query tests plus a stdio test of the executable, then stops its server. It installs no service. Each run keeps its files under `target` for inspection. Windows CI runs the same script.
+
 For the live integration test, create a JSON connection file **outside the repository** with `host`, `port`, `database`, `username`, and `password`. Keep credentials out of source control. Then:
 
 ```powershell
@@ -54,7 +69,7 @@ $env:FIREBIRD_TEST_CONFIG = 'C:/path/to/firebird-test.json'
 cargo test --locked live_connection_select_and_read_only_transaction -- --ignored
 ```
 
-This checks connectivity, a SELECT result, the transaction's read-only flag and SQL error propagation against an existing database. It does not create a database or test instance.
+This single test checks connectivity, a SELECT result, the transaction's read-only flag and SQL error propagation against an existing database. It does not create a database or test instance. Use the portable script to also test metadata, domain defaults, composite keys, identifier binding, rejected writes and invalid credentials against `tests/fixture.sql`.
 
 For a direct JSON-RPC smoke test without a server:
 
@@ -70,7 +85,8 @@ This must return an invalid-params error rather than success. The generated `jus
 - `src/handlers/query.rs`: connection checks, query validation and pagination.
 - `src/models.rs`: connection parameter validation.
 - `src/rpc.rs`: JSON-RPC dispatch.
-- `src/handlers/metadata.rs`, `crud.rs`, `ddl.rs`: remaining scaffold methods.
+- `src/handlers/metadata.rs`: catalog discovery; views and routines remain scaffold methods.
+- `src/handlers/crud.rs`, `ddl.rs`: remaining scaffold methods.
 
 ## Publishing
 

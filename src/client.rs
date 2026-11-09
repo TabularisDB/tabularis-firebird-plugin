@@ -74,6 +74,28 @@ impl Client {
             .map_err(|e| PluginError::internal(format!("Firebird query failed: {e}")))?;
         collect_rows(cursor, offset, limit)
     }
+
+    pub fn query_objects(
+        &mut self,
+        sql: &str,
+        params: Vec<SqlType>,
+    ) -> Result<Vec<Value>, PluginError> {
+        self.connection
+            .query_iter::<_, Row>(sql, params)
+            .map_err(|e| PluginError::internal(format!("Firebird metadata query failed: {e}")))?
+            .map(|row| {
+                let row = row.map_err(|e| {
+                    PluginError::internal(format!("Firebird metadata fetch failed: {e}"))
+                })?;
+                let object = row
+                    .cols
+                    .into_iter()
+                    .map(|c| Ok((c.name.to_string(), sql_value(c.value)?)))
+                    .collect::<Result<serde_json::Map<String, Value>, PluginError>>()?;
+                Ok(Value::Object(object))
+            })
+            .collect()
+    }
 }
 fn collect_rows(
     cursor: impl Iterator<Item = Result<Row, rsfbclient::FbError>>,
