@@ -1,6 +1,6 @@
 [package]
 name = "firebird-plugin"
-version = "0.2.0-dev.1"
+version = "0.2.0-beta.1"
 edition = "2021"
 description = "Tabularis driver plugin for Firebird"
 repository = "https://github.com/TabularisDB/firebird-plugin"

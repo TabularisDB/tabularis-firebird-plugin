@@ -24,6 +24,8 @@ jobs:
         run: cp .tabularium default.tabularium
       - uses: softprops/action-gh-release@v2
         with:
+          name: Firebird driver ${{ github.ref_name }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
           overwrite_files: false
           body_path: RELEASE_NOTES.md
           files: |
