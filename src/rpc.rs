@@ -22,7 +22,10 @@ pub fn handle_line(line: &str) -> Value {
     let params = request.get("params").cloned().unwrap_or(Value::Null);
 
     match method.as_str() {
-        "initialize" => ok_response(id, Value::Null),
+        "initialize" => match crate::limits::initialize(&params) {
+            Ok(()) => ok_response(id, Value::Null),
+            Err(error) => error_response(id, error.code, &error.message),
+        },
         "ping" => handlers::query::ping(id, &params),
         "test_connection" => handlers::query::test_connection(id, &params),
 

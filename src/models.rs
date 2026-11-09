@@ -15,6 +15,8 @@ pub struct ConnectionParams {
     pub username: Option<String>,
     pub password: Option<String>,
     pub ssl_mode: Option<String>,
+    pub connect_timeout_secs: u32,
+    pub query_timeout_secs: u32,
 }
 
 impl ConnectionParams {
@@ -60,7 +62,21 @@ impl ConnectionParams {
             username: get_str("username"),
             password: get_str("password"),
             ssl_mode: get_str("ssl_mode"),
+            connect_timeout_secs: seconds(value, "connect_timeout_secs", 10)?,
+            query_timeout_secs: seconds(value, "query_timeout_secs", 0)?,
         })
+    }
+}
+
+fn seconds(value: &Value, key: &str, default: u32) -> Result<u32, PluginError> {
+    match value.get(key).filter(|v| !v.is_null()) {
+        None => Ok(default),
+        Some(value) => value
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .ok_or_else(|| {
+                PluginError::invalid_params(format!("{key} must be a non-negative 32-bit integer"))
+            }),
     }
 }
 
@@ -85,6 +101,9 @@ mod tests {
             json!({"port": "3050"}),
             json!({"password": 123}),
             json!({"database": false}),
+            json!({"connect_timeout_secs": -1}),
+            json!({"query_timeout_secs": "1"}),
+            json!({"query_timeout_secs": 4294967296u64}),
         ] {
             assert!(ConnectionParams::from_value(&value).is_err());
         }
@@ -100,5 +119,17 @@ mod tests {
                 .port,
             None
         );
+    }
+
+    #[test]
+    fn parses_host_timeouts_and_defaults() {
+        let defaults = ConnectionParams::from_value(&json!({})).unwrap();
+        assert_eq!(defaults.connect_timeout_secs, 10);
+        assert_eq!(defaults.query_timeout_secs, 0);
+        let explicit =
+            ConnectionParams::from_value(&json!({"connect_timeout_secs":0,"query_timeout_secs":2}))
+                .unwrap();
+        assert_eq!(explicit.connect_timeout_secs, 0);
+        assert_eq!(explicit.query_timeout_secs, 2);
     }
 }

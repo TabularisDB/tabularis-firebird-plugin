@@ -29,8 +29,14 @@
     "create_foreign_keys": false,
     "manage_tables": false,
     "readonly": true,
-    "table_query_templates": true
+    "table_query_templates": true,
+    "query_timeout": true
   },
+  "settings": [
+    {"key":"max_result_rows","label":"Maximum buffered result rows","type":"number","default":100000},
+    {"key":"max_result_mib","label":"Maximum buffered result size (MiB)","type":"number","default":64},
+    {"key":"max_blob_mib","label":"Maximum BLOB size per cell (MiB)","type":"number","default":8}
+  ],
   "data_types": [
     {
       "name": "INTEGER",

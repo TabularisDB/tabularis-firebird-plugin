@@ -1,4 +1,5 @@
 //! One read-only Firebird connection per request.
+use crate::control::{self, Control, Deadline};
 use crate::{error::PluginError, models::ConnectionParams};
 use rsfbclient_core::{
     charset, Dialect, FirebirdClientDbOps, FirebirdClientSqlOps, FreeStmtOp, Row, SqlType,
@@ -6,13 +7,29 @@ use rsfbclient_core::{
 };
 use rsfbclient_rust::{DbHandle, RustFbClient, RustFbClientAttachmentConfig};
 use serde_json::{json, Value};
+use std::{
+    net::{TcpStream, ToSocketAddrs},
+    sync::{mpsc, Arc},
+    time::{Duration, Instant},
+};
 
 pub struct Client {
     wire: RustFbClient,
     database: DbHandle,
+    control: Arc<Control>,
+    query_timeout_secs: u32,
 }
 impl Client {
     pub fn connect(params: ConnectionParams) -> Result<Self, PluginError> {
+        let control = control::current();
+        control.check()?;
+        let _deadline = Deadline::connection(&control, params.connect_timeout_secs);
+        let result = Self::connect_inner(params, control.clone());
+        control.check()?;
+        result
+    }
+
+    fn connect_inner(params: ConnectionParams, control: Arc<Control>) -> Result<Self, PluginError> {
         let database = params
             .database
             .as_deref()
@@ -38,7 +55,6 @@ impl Client {
                 "TLS ssl_mode is not supported by this driver",
             ));
         }
-        let mut wire = RustFbClient::new(charset::UTF_8);
         let config = RustFbClientAttachmentConfig {
             host: params
                 .host
@@ -52,10 +68,25 @@ impl Client {
             pass: password.into(),
             role_name: None,
         };
+        let socket = connect_socket(
+            &config.host,
+            config.port,
+            params.connect_timeout_secs,
+            &control,
+        )?;
+        control.attach(&socket)?;
+        let mut wire =
+            RustFbClient::from_socket(charset::UTF_8, socket, &config).map_err(firebird_error)?;
+        wire.set_blob_limit(crate::limits::current().blob_bytes);
         let database = wire
             .attach_database(&config, Dialect::D3, false)
             .map_err(firebird_error)?;
-        Ok(Self { wire, database })
+        Ok(Self {
+            wire,
+            database,
+            control,
+            query_timeout_secs: params.query_timeout_secs,
+        })
     }
 
     pub fn test_connection(&mut self) -> Result<(), PluginError> {
@@ -78,6 +109,20 @@ impl Client {
     }
 
     fn query_with_params(
+        &mut self,
+        sql: &str,
+        params: Vec<SqlType>,
+        offset: u64,
+        limit: Option<u64>,
+    ) -> Result<Value, PluginError> {
+        self.control.check()?;
+        let _deadline = Deadline::query(&self.control, self.query_timeout_secs);
+        let result = self.query_inner(sql, params, offset, limit);
+        self.control.check()?;
+        result
+    }
+
+    fn query_inner(
         &mut self,
         sql: &str,
         params: Vec<SqlType>,
@@ -158,8 +203,60 @@ impl Client {
 
 impl Drop for Client {
     fn drop(&mut self) {
-        let _ = self.wire.detach_database(&mut self.database);
+        if self.control.check().is_ok() {
+            let _ = self.wire.detach_database(&mut self.database);
+        }
     }
+}
+
+fn connect_socket(
+    host: &str,
+    port: u16,
+    seconds: u32,
+    control: &Control,
+) -> Result<TcpStream, PluginError> {
+    let deadline = (seconds > 0).then(|| Instant::now() + Duration::from_secs(seconds.into()));
+    let host = host.to_owned();
+    let (sender, receiver) = mpsc::channel();
+    // OS DNS resolution cannot be interrupted; stop waiting when the request ends.
+    std::thread::spawn(move || {
+        let _ = sender.send(
+            (host.as_str(), port)
+                .to_socket_addrs()
+                .map(|a| a.collect::<Vec<_>>()),
+        );
+    });
+    let addresses = loop {
+        control.check()?;
+        match receiver.recv_timeout(Duration::from_millis(50)) {
+            Ok(result) => {
+                break result.map_err(|e| {
+                    PluginError::internal(format!("Firebird address resolution: {e}"))
+                })?
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(_) => return Err(PluginError::internal("Firebird address resolver stopped")),
+        }
+    };
+    let mut last_error = "No server addresses resolved".to_string();
+    for address in addresses {
+        control.check()?;
+        let result = match deadline {
+            Some(end) => TcpStream::connect_timeout(
+                &address,
+                end.saturating_duration_since(Instant::now())
+                    .max(Duration::from_millis(1)),
+            ),
+            None => TcpStream::connect(address),
+        };
+        match result {
+            Ok(socket) => return Ok(socket),
+            Err(error) => last_error = error.to_string(),
+        }
+    }
+    Err(PluginError::internal(format!(
+        "Firebird connection: {last_error}"
+    )))
 }
 
 fn firebird_error(error: rsfbclient_core::FbError) -> PluginError {
@@ -171,18 +268,45 @@ fn collect_rows(
     offset: u64,
     limit: Option<u64>,
 ) -> Result<Value, PluginError> {
+    collect_rows_limited(cursor, columns, offset, limit, crate::limits::current())
+}
+
+fn collect_rows_limited(
+    cursor: impl Iterator<Item = Result<Row, rsfbclient_core::FbError>>,
+    columns: Vec<String>,
+    offset: u64,
+    limit: Option<u64>,
+    bounds: crate::limits::Limits,
+) -> Result<Value, PluginError> {
     let mut rows = Vec::new();
     let mut total_count = 0u64;
+    let mut bytes = serde_json::to_vec(&columns).unwrap().len();
+    if bytes > bounds.bytes {
+        return Err(PluginError::internal(
+            "Column headers exceed max_result_mib",
+        ));
+    }
     for row in cursor {
         let row = row.map_err(|e| PluginError::internal(format!("Firebird fetch failed: {e}")))?;
 
         if total_count >= offset && limit.is_none_or(|n| total_count - offset < n) {
-            rows.push(
-                row.cols
-                    .into_iter()
-                    .map(|c| sql_value(c.value))
-                    .collect::<Result<Vec<_>, _>>()?,
-            );
+            if rows.len() >= bounds.rows {
+                return Err(PluginError::internal(
+                    "Result exceeds max_result_rows; use a smaller page or a SQL row limit",
+                ));
+            }
+            let values = row
+                .cols
+                .into_iter()
+                .map(|c| sql_value(c.value))
+                .collect::<Result<Vec<_>, _>>()?;
+            bytes = bytes.saturating_add(serde_json::to_vec(&values).unwrap().len());
+            if bytes > bounds.bytes {
+                return Err(PluginError::internal(
+                    "Result exceeds max_result_mib; reduce the page size or selected columns",
+                ));
+            }
+            rows.push(values);
         }
         total_count += 1;
     }
@@ -208,6 +332,24 @@ fn sql_value(value: SqlType) -> Result<Value, PluginError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn limits_buffered_rows_and_bytes_without_returning_partial_results() {
+        let bounds = crate::limits::Limits {
+            rows: 1,
+            bytes: 1024,
+            blob_bytes: 3,
+        };
+        assert!(collect_rows_limited((1..=2).map(row), vec!["N".into()], 0, None, bounds).is_err());
+        assert_eq!(
+            collect_rows_limited((1..=3).map(row), vec!["N".into()], 0, Some(1), bounds).unwrap()
+                ["total_count"],
+            3
+        );
+        let bytes = crate::limits::Limits { bytes: 7, ..bounds };
+        assert!(
+            collect_rows_limited([row(1)].into_iter(), vec!["N".into()], 0, None, bytes).is_err()
+        );
+    }
     fn row(n: i64) -> Result<Row, rsfbclient_core::FbError> {
         Ok(Row {
             cols: vec![rsfbclient_core::Column::new("N", 0, SqlType::Integer(n))],
@@ -263,6 +405,85 @@ mod tests {
 #[cfg(test)]
 mod integration_tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires FIREBIRD_TEST_CONFIG; run tests/live-firebird.ps1"]
+    fn live_cancellation_timeout_and_blob_limits() {
+        let config: Value = serde_json::from_str(
+            &std::fs::read_to_string(std::env::var("FIREBIRD_TEST_CONFIG").unwrap()).unwrap(),
+        )
+        .unwrap();
+        let heavy = "WITH RECURSIVE n(x) AS (SELECT 1 FROM RDB$DATABASE UNION ALL SELECT x + 1 FROM n WHERE x < 1000) SELECT SUM(CAST(a.x AS BIGINT) * b.x * c.x) FROM n a CROSS JOIN n b CROSS JOIN n c";
+        for timeout in [false, true] {
+            let mut parameters = config.clone();
+            parameters["query_timeout_secs"] = json!(if timeout { 1 } else { 0 });
+            let mut client =
+                Client::connect(ConnectionParams::from_value(&parameters).unwrap()).unwrap();
+            let id = client
+                .query("SELECT CURRENT_CONNECTION FROM RDB$DATABASE", 0, None)
+                .unwrap()["rows"][0][0]
+                .as_i64()
+                .unwrap();
+            let stop = client.control.clone();
+            let cancel = (!timeout).then(|| {
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(200));
+                    stop.cancel();
+                })
+            });
+            let start = Instant::now();
+            let error = client.query(heavy, 0, None).unwrap_err();
+            assert_eq!(error.code, if timeout { -32001 } else { -32800 }, "{error}");
+            assert!(start.elapsed() < Duration::from_secs(5));
+            if let Some(cancel) = cancel {
+                cancel.join().unwrap();
+            }
+            drop(client);
+            let mut observer =
+                Client::connect(ConnectionParams::from_value(&config).unwrap()).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let count = observer
+                    .query(
+                        &format!(
+                            "SELECT COUNT(*) FROM MON$ATTACHMENTS WHERE MON$ATTACHMENT_ID = {id}"
+                        ),
+                        0,
+                        None,
+                    )
+                    .unwrap();
+                if count["rows"] == json!([[0]]) {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "Cancelled attachment remains active on the server"
+                );
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            observer.wire.set_blob_limit(3);
+            assert_eq!(
+                observer
+                    .query(
+                        "SELECT CAST('abc' AS BLOB SUB_TYPE TEXT) FROM RDB$DATABASE",
+                        0,
+                        None
+                    )
+                    .unwrap()["rows"],
+                json!([["abc"]])
+            );
+            assert!(observer
+                .query(
+                    "SELECT CAST('abcd' AS BLOB SUB_TYPE TEXT) FROM RDB$DATABASE",
+                    0,
+                    None
+                )
+                .unwrap_err()
+                .message
+                .contains("BLOB exceeds"));
+            observer.test_connection().unwrap();
+        }
+    }
 
     #[test]
     #[ignore = "requires Firebird 4+ and FIREBIRD_TEST_CONFIG; run tests/live-firebird.ps1"]

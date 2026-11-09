@@ -87,6 +87,7 @@ pub struct RustFbClientAttachmentConfig {
 
 /// A Connection to a firebird server
 pub struct FirebirdWireConnection {
+    pub(crate) max_blob_bytes: usize,
     /// Connection socket
     socket: FbStream,
 
@@ -146,6 +147,30 @@ pub struct StmtHandleData {
 }
 
 impl RustFbClient {
+    /// Bound each decoded BLOB before buffering its content.
+    pub fn set_blob_limit(&mut self, bytes: usize) {
+        if let Some(conn) = self.conn.as_mut() {
+            conn.max_blob_bytes = bytes;
+        }
+    }
+    /// Authenticate a caller-owned socket, allowing cancellation during the handshake.
+    pub fn from_socket(
+        charset: Charset,
+        socket: TcpStream,
+        config: &RustFbClientAttachmentConfig,
+    ) -> Result<Self, FbError> {
+        let conn = FirebirdWireConnection::from_socket(
+            socket,
+            &config.db_name,
+            &config.user,
+            &config.pass,
+            charset.clone(),
+        )?;
+        Ok(Self {
+            conn: Some(conn),
+            charset,
+        })
+    }
     ///Construct a new instance of the pure rust client
     pub fn new(charset: Charset) -> Self {
         Self {
@@ -416,6 +441,16 @@ impl FirebirdWireConnection {
         charset: Charset,
     ) -> Result<Self, FbError> {
         let socket = TcpStream::connect((host, port))?;
+        Self::from_socket(socket, db_name, user, pass, charset)
+    }
+
+    fn from_socket(
+        socket: TcpStream,
+        db_name: &str,
+        user: &str,
+        pass: &str,
+        charset: Charset,
+    ) -> Result<Self, FbError> {
         // The wire protocol is request/response with small writes, so Nagle has
         // nothing to coalesce and every statement waits out a delayed ACK
         // (~40ms). Measured against Firebird 2.5: SELECT 1 FROM RDB$DATABASE
@@ -558,6 +593,7 @@ impl FirebirdWireConnection {
             },
             srp_key,
             event_channel: None,
+            max_blob_bytes: 8 * 1024 * 1024,
             next_event_id: 1,
         })
     }
@@ -1095,7 +1131,11 @@ impl FirebirdWireConnection {
         tr_handle: &mut TrHandle,
         stmt_handle: &mut StmtHandleData,
     ) -> Result<Option<Vec<Column>>, FbError> {
-        let count = fetch_batch_size();
+        let count = if stmt_handle.has_blob {
+            1
+        } else {
+            fetch_batch_size()
+        };
         let mut empty_batches = 0u32;
         while stmt_handle.prefetched.is_empty() && !stmt_handle.cursor_eof {
             self.fetch_batch(tr_handle, stmt_handle, count)?;

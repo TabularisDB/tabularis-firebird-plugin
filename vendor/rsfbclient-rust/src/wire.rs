@@ -1236,6 +1236,14 @@ impl ParsedColumn {
                 loop {
                     let (mut segment, end) = conn.get_segment(blob_handle)?;
 
+                    if data.len().saturating_add(segment.len()) > conn.max_blob_bytes {
+                        conn.close_blob(blob_handle)?;
+                        return Err(format!(
+                            "BLOB exceeds configured size limit ({} bytes)",
+                            conn.max_blob_bytes
+                        )
+                        .into());
+                    }
                     data.put(&mut segment);
 
                     if end {
