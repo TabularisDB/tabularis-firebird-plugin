@@ -1,9 +1,17 @@
-﻿# Portable Firebird 5 integration test. No service or system installation.
+﻿# Portable Firebird integration test. No service or system installation.
 param(
+    [ValidateSet('3', '4', '5')][string]$Version = '5',
     [ValidateRange(1024, 65535)][int]$Port = 13050,
     [scriptblock]$AfterTests
 )
 $ErrorActionPreference = 'Stop'
+$savedProgressPreference = $ProgressPreference
+$ProgressPreference = 'SilentlyContinue'
+$package = switch ($Version) {
+    '3' { @{ Version = '3.0.14'; File = 'Firebird-3.0.14.33856-0-x64.zip'; Hash = 'A070BC5633F9FB5AD261D87D19276324679E8EC77AFB03A2BEC056BA7E2D2DAD' } }
+    '4' { @{ Version = '4.0.7'; File = 'Firebird-4.0.7.3271-0-x64.zip'; Hash = 'D1CCBFF156750EA712635DC49B3A1405FD1C9F23A952B018C885E7BA6AF59D06' } }
+    '5' { @{ Version = '5.0.4'; File = 'Firebird-5.0.4.1812-0-windows-x64.zip'; Hash = '01E844FCE4D5F53272A76205DBC3A1BA4B782AB8E8EADCD808CDBCCD9CE13B72' } }
+}
 $repoRoot = Split-Path $PSScriptRoot -Parent
 Push-Location $repoRoot
 $serverProcess = $null
@@ -22,9 +30,8 @@ try {
     $cacheDir = (New-Item -ItemType Directory -Path $testDir).FullName
     $ownsTestDir = $true
     $archive = Join-Path $cacheDir 'firebird.zip'
-    Invoke-WebRequest -Uri 'https://github.com/FirebirdSQL/firebird/releases/download/v5.0.4/Firebird-5.0.4.1812-0-windows-x64.zip' -OutFile $archive
-    $expectedHash = '01E844FCE4D5F53272A76205DBC3A1BA4B782AB8E8EADCD808CDBCCD9CE13B72'
-    if ((Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash -ne $expectedHash) {
+    Invoke-WebRequest -Uri "https://github.com/FirebirdSQL/firebird/releases/download/v$($package.Version)/$($package.File)" -OutFile $archive
+    if ((Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash -ne $package.Hash) {
         throw 'Firebird archive checksum mismatch'
     }
     $runDir = (New-Item -ItemType Directory -Path (Join-Path $cacheDir ([Guid]::NewGuid().ToString('N')))).FullName
@@ -63,7 +70,12 @@ IpcName = tabularis_test_$Port
     $env:ISC_PASSWORD = $testPassword
     & (Join-Path $serverDir 'isql.exe') -bail -quiet -input tests/fixture.sql "127.0.0.1/${Port}:$databasePath"
     if ($LASTEXITCODE -ne 0) { throw 'Firebird fixture creation failed' }
-    cargo test --locked live_ -- --ignored
+    $testArguments = @('--ignored')
+    if ($Version -eq '3') {
+        Write-Host 'Skipping Firebird 4+ types (INT128 decimals, time zones, DECFLOAT) on Firebird 3.'
+        $testArguments += @('--skip', '_firebird4')
+    }
+    cargo test --locked live_ -- @testArguments
     if ($LASTEXITCODE -ne 0) { throw 'Firebird integration tests failed' }
     cargo build --locked --bin firebird-plugin
     if ($LASTEXITCODE -ne 0) { throw 'Plugin build failed' }
@@ -80,7 +92,7 @@ IpcName = tabularis_test_$Port
         $response.result.rows[0][0] -ne 'beta') {
         throw 'Plugin stdio integration test failed'
     }
-    Write-Host 'Firebird 5.0.4 integration tests passed.'
+    Write-Host "Firebird $($package.Version) integration tests passed."
     # Optional host verification shares the fixture lifetime and still gets finally cleanup.
     if ($AfterTests) { & $AfterTests }
 } finally {
@@ -101,5 +113,6 @@ IpcName = tabularis_test_$Port
             [Environment]::SetEnvironmentVariable($key, $savedEnvironment[$key], 'Process')
         }
         Pop-Location
+        $ProgressPreference = $savedProgressPreference
     }
 }

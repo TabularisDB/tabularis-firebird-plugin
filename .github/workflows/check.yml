@@ -13,9 +13,12 @@ jobs:
       - run: cargo clippy --all-targets --no-deps --locked -- -D warnings
   firebird-live:
     runs-on: windows-latest
+    strategy:
+      matrix:
+        version: ['3', '4', '5']
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-      - name: Test against portable Firebird 5.0.4
+      - name: Test against portable Firebird ${{ matrix.version }}
         shell: pwsh
-        run: ./tests/live-firebird.ps1
+        run: ./tests/live-firebird.ps1 -Version '${{ matrix.version }}'

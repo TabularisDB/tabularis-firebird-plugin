@@ -266,7 +266,7 @@ mod integration_tests {
 
     #[test]
     #[ignore = "requires Firebird 4+ and FIREBIRD_TEST_CONFIG; run tests/live-firebird.ps1"]
-    fn live_temporal_and_decfloat_types() {
+    fn live_temporal_and_decfloat_types_firebird4() {
         let config: Value = serde_json::from_str(
             &std::fs::read_to_string(std::env::var("FIREBIRD_TEST_CONFIG").unwrap()).unwrap(),
         )
@@ -284,6 +284,7 @@ mod integration_tests {
             CAST('1.234567890123456' AS DECFLOAT(16)) AS DF16,
             CAST('1.234567890123456789012345678901234' AS DECFLOAT(34)) AS DF34,
             CAST('1E+6000' AS DECFLOAT(34)) AS HUGE_DF,
+            CAST('1234567890123456789012345678901234.5678' AS DECIMAL(38,4)) AS WIDE_VALUE,
             CAST(NULL AS TIME WITH TIME ZONE) AS NULL_T,
             CAST(NULL AS DECFLOAT(34)) AS NULL_DF,
             CAST('hello' AS BLOB SUB_TYPE TEXT) AS TEXT_BLOB
@@ -304,6 +305,7 @@ mod integration_tests {
                 "1.234567890123456",
                 "1.234567890123456789012345678901234",
                 "1E+6000",
+                "1234567890123456789012345678901234.5678",
                 null,
                 null,
                 "hello"
@@ -338,7 +340,6 @@ mod integration_tests {
                 r#"SELECT
             CAST('90071992547409.93' AS NUMERIC(18,2)) AS N,
             CAST('-90071992547409.93' AS DECIMAL(18,2)) AS D,
-            CAST('1234567890123456789012345678901234.5678' AS DECIMAL(38,4)) AS WIDE_VALUE,
             CAST('9007199254740993' AS NUMERIC(18,0)) AS WHOLE_VALUE,
             CAST(1.25 AS DOUBLE PRECISION) AS FLOAT_VALUE,
             CAST(NULL AS DECIMAL(18,2)) AS NULL_VALUE
@@ -352,11 +353,27 @@ mod integration_tests {
             json!([[
                 "90071992547409.93",
                 "-90071992547409.93",
-                "1234567890123456789012345678901234.5678",
                 "9007199254740993",
                 1.25,
                 null
             ]])
+        );
+        let temporal = client.query("SELECT DATE '2024-02-29', TIME '23:59:59.1234', TIMESTAMP '2024-02-29 23:59:59.1234' FROM RDB$DATABASE", 0, None).unwrap();
+        let engine = client
+            .query(
+                "SELECT RDB$GET_CONTEXT('SYSTEM', 'ENGINE_VERSION') FROM RDB$DATABASE",
+                0,
+                None,
+            )
+            .unwrap();
+        let timestamp = if engine["rows"][0][0].as_str().unwrap().starts_with("3.") {
+            "29-FEB-2024 23:59:59.1234"
+        } else {
+            "2024-02-29 23:59:59.1234"
+        };
+        assert_eq!(
+            temporal["rows"],
+            json!([["2024-02-29", "23:59:59.1234", timestamp]])
         );
         assert!(client
             .query("SELECT 1/0 FROM RDB$DATABASE", 0, None)

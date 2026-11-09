@@ -16,7 +16,7 @@ Restart Tabularis or toggle the plugin in Settings. Configure:
 - Database: a database alias or a file path **on the server**, not on the plugin machine.
 - Username and password: an existing Firebird database user. No default password is assumed.
 
-The connection uses UTF-8 and SQL dialect 3. A local Firebird server is supported over TCP; embedded mode and TLS configuration are not implemented. Live integration tests pass against Firebird 5.0.4 on Windows. Other versions are not yet validated; the metadata queries require Firebird 3+ catalogs.
+The connection uses UTF-8 and SQL dialect 3. A local Firebird server is supported over TCP; embedded mode and TLS configuration are not implemented. Live integration tests pass against Firebird 3.0.14, 4.0.7 and 5.0.4 on Windows. Other patch versions are not individually validated; the metadata queries require Firebird 3+ catalogs.
 
 ## Implemented
 
@@ -50,7 +50,7 @@ Result representation and remaining limitations:
 - Column names come from prepared statement metadata, including for empty results and pages beyond the last row.
 - Large integers outside JavaScript's exact integer range, and INT128 values, are returned as decimal strings.
 - NUMERIC/DECIMAL values are returned as exact decimal strings, including zero-scale decimals and 38-digit values. Conversion happens on the server before transmission; no floating-point conversion is involved. FLOAT/DOUBLE values remain JSON numbers.
-- DATE, TIME and TIMESTAMP are server-formatted strings preserving their original kind and fractional seconds. WITH TIME ZONE values also retain their named zone or numeric offset; the plugin performs no conversion to the PC's time zone.
+- DATE, TIME and TIMESTAMP are server-formatted strings preserving their original kind and fractional seconds. Firebird 3 formats TIMESTAMP dates as `29-FEB-2024`, while Firebird 4/5 use `2024-02-29`. WITH TIME ZONE values also retain their named zone or numeric offset; the plugin performs no conversion to the PC's time zone.
 - DECFLOAT(16/34) values are decimal strings, preserving all digits and exponents. Special values such as `NaN`, `Infinity` and `-Infinity` are strings too, so the response remains valid JSON.
 - Binary BLOBs are JSON byte arrays; text BLOBs are strings. Arrays and BLOB subtypes other than binary/text remain unsupported and return errors.
 
@@ -68,11 +68,14 @@ For a repeatable live test on Windows:
 
 ```powershell
 ./tests/live-firebird.ps1
+# Check the pinned Firebird 3 or 4 release instead of the default 5:
+./tests/live-firebird.ps1 -Version 3
+./tests/live-firebird.ps1 -Version 4
 # Optional if port 13050 is occupied:
 ./tests/live-firebird.ps1 -Port 13051
 ```
 
-The script downloads the official portable Firebird 5.0.4 ZIP (verifying a pinned SHA-256), creates an isolated fixture database and random local test credentials under the ignored `target/firebird-test` directory, binds to `127.0.0.1`, and runs live catalog/query tests plus a stdio test of the executable. Its `finally` block stops its server and deletes the entire test directory, including the download, extracted server, database, lock files and credentials, on success or failure. It installs no service. It refuses to overwrite a pre-existing test directory. Windows CI runs the same script.
+The script downloads the official portable Firebird 3.0.14, 4.0.7 or 5.0.4 ZIP (verifying its pinned SHA-256), creates an isolated fixture database and random local test credentials under the ignored `target/firebird-test` directory, binds to `127.0.0.1`, and runs live catalog/query tests plus a stdio test of the executable. Its `finally` block stops its server and deletes the entire test directory, including the download, extracted server, database, lock files and credentials, on success or failure. It installs no service. It refuses to overwrite a pre-existing test directory. Windows CI runs the same script for all three versions.
 
 For the live integration test, create a JSON connection file **outside the repository** with `host`, `port`, `database`, `username`, and `password`. Keep credentials out of source control. Then:
 
@@ -83,7 +86,7 @@ cargo test --locked live_connection_select_and_read_only_transaction -- --ignore
 
 This single test checks connectivity, a SELECT result, the transaction's read-only flag and SQL error propagation against an existing database. It does not create a database or test instance. Use the portable script to also test metadata, domain defaults, composite keys, identifier binding, rejected writes and invalid credentials against `tests/fixture.sql`.
 
-The live suite also covers empty result headers, exact positive/negative decimals and INT128-backed decimals, zero-scale decimals, ordinary floating-point values, NULLs, and reusing a connection after a failed query. Temporal/DECFLOAT coverage includes leap-day dates, four fractional-second digits, named zones in summer and winter, a non-whole-hour offset, all 34 DECFLOAT digits, large exponents and special values, also mixed with a text BLOB. These newer types require Firebird 4+; the portable suite uses 5.0.4. Workspace tests include the vendored wire driver's tests; Clippy targets plugin code without linting third-party implementation details.
+The live suite also covers empty result headers, exact positive/negative decimals, zero-scale decimals, ordinary floating-point values, NULLs, leap-day dates, four fractional-second digits and reusing a connection after a failed query. Firebird 4/5 additionally test INT128-backed decimals, named zones in summer and winter, a non-whole-hour offset, all 34 DECFLOAT digits, large exponents and special values, also mixed with a text BLOB. The script explicitly skips this newer-type test on Firebird 3, which lacks these types. Workspace tests include the vendored wire driver's tests; Clippy targets plugin code without linting third-party implementation details.
 
 An installed Tabularis 0.32.0 was also checked in Web mode on Windows with an isolated profile and Firebird fixture: driver discovery, saved connection, table and view results, routine parameters/definition, the ER diagram with composite-FK edges, and the grid's explicit row limit. Temporary profile, plugin copy, database and servers were removed afterward. This does not replace a native desktop-window smoke test. For additional host checks, `tests/live-firebird.ps1 -AfterTests { ... }` runs a callback while the fixture is alive and retains automatic cleanup.
 
@@ -113,7 +116,6 @@ The included release workflow builds Linux, macOS and Windows bundles when a `v*
 Before a first read-only release:
 
 - Repeat the Windows Web smoke test in native desktop mode, including new-connection creation, SQL previews and relevant error dialogs. The installed 0.32.0 host's main browsing and ER flows have been checked in Web mode.
-- Decide the supported Firebird version range and test it. So far, live validation is Firebird 5.0.4 on Windows; catalog SQL assumes Firebird 3+.
 - Validate Linux/macOS builds and release archives, including executable discovery, the manifest, notices and registry ingestion. The release workflow is present but has not been exercised here.
 - Confirm the bounty's exact acceptance criteria and whether a TCP connection to a local server satisfies its local-deployment requirement.
 
