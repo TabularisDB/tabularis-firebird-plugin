@@ -9,6 +9,15 @@ use std::{convert::TryFrom, mem, sync::Arc};
 
 use crate::consts;
 
+// Firebird 4+ SQLDA codes missing from rsfbclient-core's older generated ibase bindings.
+// https://github.com/FirebirdSQL/firebird/blob/v5.0.4/src/include/firebird/impl/sqlda_pub.h
+const SQL_TIMESTAMP_TZ_EX: u32 = 32748;
+const SQL_TIME_TZ_EX: u32 = 32750;
+const SQL_TIMESTAMP_TZ: u32 = 32754;
+const SQL_TIME_TZ: u32 = 32756;
+const SQL_DEC16: u32 = 32760;
+const SQL_DEC34: u32 = 32762;
+
 /// Data to return about a statement
 pub const XSQLDA_DESCRIBE_VARS: [u8; 17] = [
     ibase::isc_info_sql_stmt_type as u8, // Statement type: StmtType
@@ -69,6 +78,13 @@ impl XSqlVar {
         // var.null_ind = 1;
 
         match sqltype as u32 {
+            SQL_DEC16 | SQL_DEC34 => {
+                // Preserve all decimal digits, exponents and special values as server-formatted text.
+                self.sqltype = ibase::SQL_VARYING as i16 + 1;
+                self.data_length = 64;
+                self.scale = 0;
+                self.sqlsubtype = 0;
+            }
             ibase::SQL_SHORT | ibase::SQL_LONG | ibase::SQL_INT64 | ibase::SQL_INT128
                 if self.scale != 0 || matches!(sqlsubtype, 1 | 2) =>
             {
@@ -99,10 +115,18 @@ impl XSqlVar {
                 self.sqltype = ibase::SQL_DOUBLE as i16 + 1;
             }
 
-            ibase::SQL_TIMESTAMP | ibase::SQL_TYPE_DATE | ibase::SQL_TYPE_TIME => {
-                self.data_length = mem::size_of::<ibase::ISC_TIMESTAMP>() as i16;
-
-                self.sqltype = ibase::SQL_TIMESTAMP as i16 + 1;
+            ibase::SQL_TIMESTAMP
+            | ibase::SQL_TYPE_DATE
+            | ibase::SQL_TYPE_TIME
+            | SQL_TIMESTAMP_TZ
+            | SQL_TIME_TZ
+            | SQL_TIMESTAMP_TZ_EX
+            | SQL_TIME_TZ_EX => {
+                // Let Firebird preserve the original date/time kind, fractional seconds and zone.
+                self.sqltype = ibase::SQL_VARYING as i16 + 1;
+                self.data_length = 128;
+                self.scale = 0;
+                self.sqlsubtype = 0;
             }
 
             ibase::SQL_BLOB if sqlsubtype <= 1 => {
@@ -418,6 +442,40 @@ fn err_invalid_xsqlda<T>() -> Result<T, FbError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn temporal_and_decfloat_types_are_requested_as_text() {
+        for kind in [
+            ibase::SQL_TIMESTAMP,
+            ibase::SQL_TYPE_DATE,
+            ibase::SQL_TYPE_TIME,
+            SQL_TIMESTAMP_TZ,
+            SQL_TIME_TZ,
+            SQL_TIMESTAMP_TZ_EX,
+            SQL_TIME_TZ_EX,
+            SQL_DEC16,
+            SQL_DEC34,
+        ] {
+            for nullable in [0, 1] {
+                let mut var = XSqlVar {
+                    sqltype: kind as i16 + nullable,
+                    ..Default::default()
+                };
+                var.coerce().unwrap();
+                assert_eq!(var.sqltype, ibase::SQL_VARYING as i16 + 1);
+                assert_eq!(
+                    var.data_length,
+                    if matches!(kind, SQL_DEC16 | SQL_DEC34) {
+                        64
+                    } else {
+                        128
+                    }
+                );
+                let blr = xsqlda_to_blr(&[var]).unwrap();
+                assert_eq!(blr[6], consts::blr::VARYING);
+            }
+        }
+    }
 
     #[test]
     fn fixed_point_int128_is_requested_as_exact_text() {

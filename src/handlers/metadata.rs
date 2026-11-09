@@ -6,7 +6,7 @@ use crate::{
     client::Client,
     error::PluginError,
     models::{inner_params, ConnectionParams},
-    rpc::{error_response, not_implemented, ok_response},
+    rpc::{error_response, ok_response},
 };
 use rsfbclient_core::SqlType;
 
@@ -48,27 +48,25 @@ pub fn get_schemas(id: Value, _params: &Value) -> Value {
 }
 
 pub fn get_tables(id: Value, params: &Value) -> Value {
-    respond(
-        id,
-        (|| {
-            let rows = connect(params)?.query_objects(
-                r#"
+    respond(id, (|| Ok(Value::Array(tables(&mut connect(params)?)?)))())
+}
+
+fn tables(client: &mut Client) -> Result<Vec<Value>, PluginError> {
+    let rows = client.query_objects(
+        r#"
             SELECT TRIM(RDB$RELATION_NAME) AS "name", RDB$DESCRIPTION AS "comment"
             FROM RDB$RELATIONS
             WHERE COALESCE(RDB$SYSTEM_FLAG, 0) = 0 AND RDB$VIEW_BLR IS NULL
             ORDER BY RDB$RELATION_NAME"#,
-                vec![],
-            )?;
-            Ok(Value::Array(
-                rows.into_iter()
-                    .map(|mut row| {
-                        row["schema"] = Value::Null;
-                        row
-                    })
-                    .collect(),
-            ))
-        })(),
-    )
+        vec![],
+    )?;
+    Ok(rows
+        .into_iter()
+        .map(|mut row| {
+            row["schema"] = Value::Null;
+            row
+        })
+        .collect())
 }
 
 pub fn get_columns(id: Value, params: &Value) -> Value {
@@ -342,23 +340,148 @@ pub fn get_routine_definition(id: Value, params: &Value) -> Value {
     )
 }
 
-pub fn get_schema_snapshot(id: Value, _params: &Value) -> Value {
-    // Used for the ER diagram. Return
-    // [{ name, columns: [...], foreign_keys: [...] }].
-    not_implemented(id, "get_schema_snapshot")
+pub fn get_schema_snapshot(id: Value, params: &Value) -> Value {
+    respond(
+        id,
+        (|| {
+            let mut client = connect(params)?;
+            let tables = tables(&mut client)?;
+            let names: Vec<String> = tables
+                .iter()
+                .map(|table| table["name"].as_str().unwrap().to_string())
+                .collect();
+            let mut columns = batch_metadata(&mut client, &names, COLUMNS_SQL, "rf")?;
+            let mut foreign_keys = batch_metadata(&mut client, &names, FOREIGN_KEYS_SQL, "rc")?;
+            Ok(Value::Array(
+                names
+                    .into_iter()
+                    .map(|name| {
+                        let cols = columns.remove(&name).unwrap();
+                        let fks = foreign_keys.remove(&name).unwrap();
+                        json!({"name":name, "columns":cols, "foreign_keys":fks})
+                    })
+                    .collect(),
+            ))
+        })(),
+    )
 }
 
-pub fn get_all_columns_batch(id: Value, _params: &Value) -> Value {
-    not_implemented(id, "get_all_columns_batch")
+pub fn get_all_columns_batch(id: Value, params: &Value) -> Value {
+    respond(id, batch(params, COLUMNS_SQL, "rf"))
 }
 
-pub fn get_all_foreign_keys_batch(id: Value, _params: &Value) -> Value {
-    not_implemented(id, "get_all_foreign_keys_batch")
+pub fn get_all_foreign_keys_batch(id: Value, params: &Value) -> Value {
+    respond(id, batch(params, FOREIGN_KEYS_SQL, "rc"))
+}
+
+fn requested_tables(params: &Value) -> Result<Vec<String>, PluginError> {
+    let values = params
+        .get("tables")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            PluginError::invalid_params("tables must be an array of non-empty strings")
+        })?;
+    let mut names = std::collections::BTreeSet::new();
+    for value in values {
+        let name = value
+            .as_str()
+            .filter(|s| !s.is_empty() && !s.ends_with(' '))
+            .ok_or_else(|| {
+                PluginError::invalid_params(
+                    "tables must contain non-empty names without trailing spaces",
+                )
+            })?;
+        names.insert(name.to_string());
+    }
+    Ok(names.into_iter().collect())
+}
+
+fn batch(params: &Value, sql: &str, alias: &str) -> Result<Value, PluginError> {
+    let names = requested_tables(params)?;
+    if names.is_empty() {
+        return Ok(json!({}));
+    }
+    Ok(Value::Object(batch_metadata(
+        &mut connect(params)?,
+        &names,
+        sql,
+        alias,
+    )?))
+}
+
+fn batch_sql(sql: &str, alias: &str, count: usize) -> String {
+    let placeholders = vec!["?"; count].join(", ");
+    sql.replace("{data_type}", FIELD_TYPE_SQL)
+        .replacen(
+            "SELECT ",
+            &format!("SELECT TRIM(TRAILING FROM {alias}.RDB$RELATION_NAME) AS \"table_name\", "),
+            1,
+        )
+        .replace(
+            &format!("{alias}.RDB$RELATION_NAME = ?"),
+            &format!("{alias}.RDB$RELATION_NAME IN ({placeholders})"),
+        )
+}
+
+fn batch_metadata(
+    client: &mut Client,
+    names: &[String],
+    sql: &str,
+    alias: &str,
+) -> Result<serde_json::Map<String, Value>, PluginError> {
+    let mut grouped: serde_json::Map<String, Value> =
+        names.iter().map(|name| (name.clone(), json!([]))).collect();
+    // Firebird 3 limits IN lists to 1500 entries; leave room and avoid one query per table.
+    for chunk in names.chunks(500) {
+        let rows = client.query_objects(
+            &batch_sql(sql, alias, chunk.len()),
+            chunk.iter().cloned().map(SqlType::Text).collect(),
+        )?;
+        for mut row in rows {
+            let name = row.as_object_mut().unwrap().remove("table_name").unwrap();
+            grouped
+                .get_mut(name.as_str().unwrap())
+                .and_then(Value::as_array_mut)
+                .ok_or_else(|| PluginError::internal("Unexpected table name in catalog results"))?
+                .push(row);
+        }
+    }
+    Ok(grouped)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validates_batch_table_names_and_handles_empty_requests() {
+        for params in [
+            json!({}),
+            json!({"tables": null}),
+            json!({"tables": "FB_CHILD"}),
+            json!({"tables": [1]}),
+            json!({"tables": ["FB_CHILD", ""]}),
+            json!({"tables": ["FB_CHILD "]}),
+        ] {
+            for handler in [get_all_columns_batch, get_all_foreign_keys_batch] {
+                let response = handler(json!(9), &params);
+                assert_eq!(response["id"], json!(9));
+                assert_eq!(response["error"]["code"], json!(-32602));
+            }
+        }
+        assert_eq!(
+            requested_tables(&json!({"tables": ["B", "A", "B"]})).unwrap(),
+            vec!["A", "B"]
+        );
+        assert_eq!(
+            get_all_columns_batch(json!(9), &json!({"tables":[]}))["result"],
+            json!({})
+        );
+        assert_eq!(
+            get_all_foreign_keys_batch(json!(9), &json!({"tables":[]}))["result"],
+            json!({})
+        );
+    }
 
     #[test]
     fn combines_index_segments_in_catalog_order() {
@@ -593,6 +716,37 @@ mod tests {
                 .get("error")
                 .is_some());
         }
+        let snapshot = call("get_schema_snapshot", json!({}));
+        let snapshot = snapshot.as_array().unwrap();
+        assert_eq!(snapshot.len(), tables.len());
+        let names: Vec<Value> = tables.iter().map(|t| t["name"].clone()).collect();
+        let all_columns = call("get_all_columns_batch", json!({"tables": names}));
+        let all_fks = call("get_all_foreign_keys_batch", json!({"tables": names}));
+        for table in snapshot {
+            let name = table["name"].as_str().unwrap();
+            assert_eq!(table["columns"], call("get_columns", json!({"table":name})));
+            assert_eq!(
+                table["foreign_keys"],
+                call("get_foreign_keys", json!({"table":name}))
+            );
+            assert_eq!(table["columns"], all_columns[name]);
+            assert_eq!(table["foreign_keys"], all_fks[name]);
+        }
+        assert_eq!(all_fks["FB_PARENT"], json!([]));
+        assert_eq!(all_columns["odd' table"][0]["name"], json!("mixedCase"));
+        let missing = call(
+            "get_all_columns_batch",
+            json!({"tables":["missing_table", "' OR 1=1 --", "FB_CHILD", "FB_CHILD"]}),
+        );
+        assert_eq!(missing.as_object().unwrap().len(), 3);
+        assert_eq!(missing["missing_table"], json!([]));
+        assert_eq!(missing["' OR 1=1 --"], json!([]));
+        assert_eq!(missing["FB_CHILD"], all_columns["FB_CHILD"]);
+        let mut many_names: Vec<String> = (0..1501).map(|i| format!("MISSING_{i}")).collect();
+        many_names.push("FB_CHILD".into());
+        let chunked = call("get_all_columns_batch", json!({"tables": many_names}));
+        assert_eq!(chunked.as_object().unwrap().len(), 1502);
+        assert_eq!(chunked["FB_CHILD"], all_columns["FB_CHILD"]);
         let mut client = Client::connect(ConnectionParams::from_value(&config).unwrap()).unwrap();
         assert!(client
             .query(

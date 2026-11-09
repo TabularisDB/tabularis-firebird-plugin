@@ -265,6 +265,56 @@ mod integration_tests {
     use super::*;
 
     #[test]
+    #[ignore = "requires Firebird 4+ and FIREBIRD_TEST_CONFIG; run tests/live-firebird.ps1"]
+    fn live_temporal_and_decfloat_types() {
+        let config: Value = serde_json::from_str(
+            &std::fs::read_to_string(std::env::var("FIREBIRD_TEST_CONFIG").unwrap()).unwrap(),
+        )
+        .unwrap();
+        let mut client = Client::connect(ConnectionParams::from_value(&config).unwrap()).unwrap();
+        let result = client
+            .query(
+                r#"SELECT
+            DATE '2024-02-29' AS D,
+            TIME '23:59:59.1234' AS T,
+            TIMESTAMP '2024-02-29 23:59:59.1234' AS TS,
+            TIMESTAMP '2024-07-01 12:34:56.7890 Europe/Berlin' AS SUMMER_TS,
+            TIMESTAMP '2024-01-01 12:34:56.7890 Europe/Berlin' AS WINTER_TS,
+            TIME '12:34:56.7890 +05:45' AS OFFSET_T,
+            CAST('1.234567890123456' AS DECFLOAT(16)) AS DF16,
+            CAST('1.234567890123456789012345678901234' AS DECFLOAT(34)) AS DF34,
+            CAST('1E+6000' AS DECFLOAT(34)) AS HUGE_DF,
+            CAST(NULL AS TIME WITH TIME ZONE) AS NULL_T,
+            CAST(NULL AS DECFLOAT(34)) AS NULL_DF,
+            CAST('hello' AS BLOB SUB_TYPE TEXT) AS TEXT_BLOB
+            FROM RDB$DATABASE"#,
+                0,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            result["rows"],
+            json!([[
+                "2024-02-29",
+                "23:59:59.1234",
+                "2024-02-29 23:59:59.1234",
+                "2024-07-01 12:34:56.7890 Europe/Berlin",
+                "2024-01-01 12:34:56.7890 Europe/Berlin",
+                "12:34:56.7890 +05:45",
+                "1.234567890123456",
+                "1.234567890123456789012345678901234",
+                "1E+6000",
+                null,
+                null,
+                "hello"
+            ]])
+        );
+        let special = client.query("SELECT CAST('NaN' AS DECFLOAT(34)) AS N, CAST('Infinity' AS DECFLOAT(16)) AS I, CAST('-Infinity' AS DECFLOAT(34)) AS NEG FROM RDB$DATABASE", 0, None).unwrap();
+        assert_eq!(special["rows"], json!([["NaN", "Infinity", "-Infinity"]]));
+        client.test_connection().unwrap();
+    }
+
+    #[test]
     #[ignore = "requires FIREBIRD_TEST_CONFIG; run tests/live-firebird.ps1"]
     fn live_exact_numbers_empty_headers_and_recovery() {
         let config: Value = serde_json::from_str(
