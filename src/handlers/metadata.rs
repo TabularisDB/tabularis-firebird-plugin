@@ -146,7 +146,7 @@ pub fn get_indexes(id: Value, params: &Value) -> Value {
     )
 }
 
-const FIELD_TYPE_SQL: &str = r#"TRIM(CASE
+pub(super) const FIELD_TYPE_SQL: &str = r#"TRIM(CASE
       WHEN f.RDB$FIELD_TYPE IN (7, 8, 16, 26) AND f.RDB$FIELD_SUB_TYPE IN (1, 2)
       THEN CASE f.RDB$FIELD_SUB_TYPE WHEN 1 THEN 'NUMERIC' ELSE 'DECIMAL' END
         || '(' || CAST(f.RDB$FIELD_PRECISION AS VARCHAR(3)) || ','
