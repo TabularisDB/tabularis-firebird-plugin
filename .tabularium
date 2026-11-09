@@ -11,7 +11,7 @@
   "executable": "firebird-plugin",
   "capabilities": {
     "schemas": false,
-    "views": false,
+    "views": true,
     "routines": false,
     "file_based": false,
     "folder_based": false,

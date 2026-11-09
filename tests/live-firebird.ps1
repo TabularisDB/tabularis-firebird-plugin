@@ -4,6 +4,8 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path $PSScriptRoot -Parent
 Push-Location $repoRoot
 $serverProcess = $null
+$ownsTestDir = $false
+$testDir = [IO.Path]::GetFullPath((Join-Path $repoRoot 'target/firebird-test'))
 $savedEnvironment = @{}
 foreach ($key in @('FIREBIRD_LOCK', 'FIREBIRD_TEST_CONFIG', 'ISC_USER', 'ISC_PASSWORD')) {
     $savedEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
@@ -13,11 +15,11 @@ try {
     $probe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $Port)
     try { $probe.Start() } finally { $probe.Stop() }
 
-    $cacheDir = (New-Item -ItemType Directory -Force target/firebird-test).FullName
+    if (Test-Path -LiteralPath $testDir) { throw "Test directory already exists: $testDir" }
+    $cacheDir = (New-Item -ItemType Directory -Path $testDir).FullName
+    $ownsTestDir = $true
     $archive = Join-Path $cacheDir 'firebird.zip'
-    if (!(Test-Path -LiteralPath $archive)) {
-        Invoke-WebRequest -Uri 'https://github.com/FirebirdSQL/firebird/releases/download/v5.0.4/Firebird-5.0.4.1812-0-windows-x64.zip' -OutFile $archive
-    }
+    Invoke-WebRequest -Uri 'https://github.com/FirebirdSQL/firebird/releases/download/v5.0.4/Firebird-5.0.4.1812-0-windows-x64.zip' -OutFile $archive
     $expectedHash = '01E844FCE4D5F53272A76205DBC3A1BA4B782AB8E8EADCD808CDBCCD9CE13B72'
     if ((Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash -ne $expectedHash) {
         throw 'Firebird archive checksum mismatch'
@@ -25,7 +27,7 @@ try {
     $runDir = (New-Item -ItemType Directory -Path (Join-Path $cacheDir ([Guid]::NewGuid().ToString('N')))).FullName
     $serverDir = Join-Path $runDir 'server'
     Expand-Archive -LiteralPath $archive -DestinationPath $serverDir
-    # Firebird 5 processes share named memory mappings, so keep their lock directory stable.
+    # All processes in this test must use the same directory for shared memory mappings.
     $env:FIREBIRD_LOCK = (New-Item -ItemType Directory -Force -Path (Join-Path $cacheDir 'lock')).FullName
     $env:ISC_USER = $null
     $env:ISC_PASSWORD = $null
@@ -76,12 +78,22 @@ IpcName = tabularis_test_$Port
     }
     Write-Host 'Firebird 5.0.4 integration tests passed.'
 } finally {
-    if ($null -ne $serverProcess -and !$serverProcess.HasExited) {
-        Stop-Process -Id $serverProcess.Id
-        $serverProcess.WaitForExit()
+    try {
+        if ($null -ne $serverProcess -and !$serverProcess.HasExited) {
+            Stop-Process -Id $serverProcess.Id
+            $serverProcess.WaitForExit()
+        }
+        if ($ownsTestDir) {
+            $expectedPath = [IO.Path]::GetFullPath((Join-Path $repoRoot 'target/firebird-test'))
+            if ($testDir -ne $expectedPath -or !$testDir.StartsWith($repoRoot + [IO.Path]::DirectorySeparatorChar)) {
+                throw 'Unsafe Firebird cleanup path'
+            }
+            Remove-Item -LiteralPath $testDir -Recurse -Force
+        }
+    } finally {
+        foreach ($key in $savedEnvironment.Keys) {
+            [Environment]::SetEnvironmentVariable($key, $savedEnvironment[$key], 'Process')
+        }
+        Pop-Location
     }
-    foreach ($key in $savedEnvironment.Keys) {
-        [Environment]::SetEnvironmentVariable($key, $savedEnvironment[$key], 'Process')
-    }
-    Pop-Location
 }

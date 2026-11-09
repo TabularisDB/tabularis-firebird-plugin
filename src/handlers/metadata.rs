@@ -21,12 +21,12 @@ fn connect(params: &Value) -> Result<Client, PluginError> {
     Client::connect(ConnectionParams::from_value(inner_params(params))?)
 }
 
-fn table(params: &Value) -> Result<&str, PluginError> {
+fn object_name<'a>(params: &'a Value, key: &str) -> Result<&'a str, PluginError> {
     params
-        .get("table")
+        .get(key)
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| PluginError::invalid_params("table must be a non-empty string"))
+        .ok_or_else(|| PluginError::invalid_params(format!("{key} must be a non-empty string")))
 }
 
 pub fn get_databases(id: Value, params: &Value) -> Value {
@@ -75,7 +75,7 @@ pub fn get_columns(id: Value, params: &Value) -> Value {
     respond(
         id,
         (|| {
-            let name = table(params)?;
+            let name = object_name(params, "table")?;
             let rows =
                 connect(params)?.query_objects(COLUMNS_SQL, vec![SqlType::Text(name.into())])?;
             Ok(Value::Array(rows))
@@ -87,7 +87,7 @@ pub fn get_foreign_keys(id: Value, params: &Value) -> Value {
     respond(
         id,
         (|| {
-            let name = table(params)?;
+            let name = object_name(params, "table")?;
             Ok(Value::Array(connect(params)?.query_objects(
                 FOREIGN_KEYS_SQL,
                 vec![SqlType::Text(name.into())],
@@ -100,7 +100,7 @@ pub fn get_indexes(id: Value, params: &Value) -> Value {
     respond(
         id,
         (|| {
-            let name = table(params)?;
+            let name = object_name(params, "table")?;
             let rows =
                 connect(params)?.query_objects(INDEXES_SQL, vec![SqlType::Text(name.into())])?;
             Ok(Value::Array(group_indexes(rows)))
@@ -186,16 +186,63 @@ JOIN RDB$INDEX_SEGMENTS ts ON ts.RDB$INDEX_NAME = target.RDB$INDEX_NAME AND ts.R
 WHERE rc.RDB$RELATION_NAME = ? ORDER BY rc.RDB$CONSTRAINT_NAME, s.RDB$FIELD_POSITION
 "#;
 
-pub fn get_views(id: Value, _params: &Value) -> Value {
-    ok_response(id, json!([]))
+pub fn get_views(id: Value, params: &Value) -> Value {
+    respond(
+        id,
+        (|| {
+            let rows = connect(params)?.query_objects(
+                r#"
+            SELECT TRIM(RDB$RELATION_NAME) AS "name", RDB$DESCRIPTION AS "comment"
+            FROM RDB$RELATIONS
+            WHERE COALESCE(RDB$SYSTEM_FLAG, 0) = 0 AND RDB$VIEW_BLR IS NOT NULL
+            ORDER BY RDB$RELATION_NAME"#,
+                vec![],
+            )?;
+            Ok(Value::Array(
+                rows.into_iter()
+                    .map(|mut row| {
+                        row["schema"] = Value::Null;
+                        row
+                    })
+                    .collect(),
+            ))
+        })(),
+    )
 }
 
-pub fn get_view_definition(id: Value, _params: &Value) -> Value {
-    ok_response(id, Value::String(String::new()))
+pub fn get_view_definition(id: Value, params: &Value) -> Value {
+    respond(
+        id,
+        (|| {
+            let name = object_name(params, "view")?;
+            let rows = connect(params)?.query_objects(
+                r#"
+            SELECT RDB$VIEW_SOURCE AS "definition" FROM RDB$RELATIONS
+            WHERE RDB$RELATION_NAME = ? AND RDB$VIEW_BLR IS NOT NULL"#,
+                vec![SqlType::Text(name.into())],
+            )?;
+            rows.first()
+                .and_then(|row| row.get("definition"))
+                .filter(|v| v.is_string())
+                .cloned()
+                .ok_or_else(|| {
+                    PluginError::internal("View does not exist or its source is unavailable")
+                })
+        })(),
+    )
 }
 
-pub fn get_view_columns(id: Value, _params: &Value) -> Value {
-    ok_response(id, json!([]))
+pub fn get_view_columns(id: Value, params: &Value) -> Value {
+    respond(
+        id,
+        (|| {
+            let name = object_name(params, "view")?;
+            Ok(Value::Array(connect(params)?.query_objects(
+                COLUMNS_SQL,
+                vec![SqlType::Text(name.into())],
+            )?))
+        })(),
+    )
 }
 
 pub fn get_routines(id: Value, _params: &Value) -> Value {
@@ -257,6 +304,17 @@ mod tests {
                 get_foreign_keys(json!(7), &value)["error"]["code"],
                 json!(-32602)
             );
+        }
+    }
+
+    #[test]
+    fn rejects_missing_view_before_connecting() {
+        for value in [json!({}), json!({"view": ""}), json!({"view": 1})] {
+            for handler in [get_view_definition, get_view_columns] {
+                let response = handler(json!(7), &value);
+                assert_eq!(response["id"], json!(7));
+                assert_eq!(response["error"]["code"], json!(-32602));
+            }
         }
     }
 
@@ -343,6 +401,45 @@ mod tests {
         );
         assert_eq!(result["total_count"], json!(2));
         assert_eq!(result["rows"], json!([["beta", false, null]]));
+        let views = call("get_views", json!({}));
+        let views = views.as_array().unwrap();
+        assert_eq!(views.len(), 2);
+        assert!(views
+            .iter()
+            .any(|v| v["name"] == "FB_CHILD_VIEW" && v["schema"].is_null()));
+        assert!(views.iter().any(|v| v["name"] == "odd' view"));
+        assert_eq!(
+            call("get_view_definition", json!({"view":"FB_CHILD_VIEW"})),
+            json!("SELECT ID, LABEL FROM FB_CHILD")
+        );
+        let view_columns = call("get_view_columns", json!({"view":"FB_CHILD_VIEW"}));
+        assert_eq!(view_columns[0]["name"], json!("ID"));
+        assert_eq!(view_columns[1]["name"], json!("LABEL"));
+        assert_eq!(view_columns[1]["data_type"], json!("VARCHAR(40)"));
+        assert_eq!(
+            call("get_view_columns", json!({"view":"odd' view"}))[0]["name"],
+            json!("mixedCase")
+        );
+        assert!(call("get_view_definition", json!({"view":"odd' view"}))
+            .as_str()
+            .unwrap()
+            .contains("mixedCase"));
+        assert_eq!(
+            call("get_view_columns", json!({"view":"' OR 1=1 --"})),
+            json!([])
+        );
+        let unknown_view = get_view_definition(
+            json!(3),
+            &json!({"params": config.clone(), "view":"' OR 1=1 --"}),
+        );
+        assert!(unknown_view.get("error").is_some());
+        assert_eq!(
+            call(
+                "execute_query",
+                json!({"query":"SELECT LABEL FROM FB_CHILD_VIEW ORDER BY ID"})
+            )["rows"],
+            json!([["alpha"], ["beta"]])
+        );
         let mut client = Client::connect(ConnectionParams::from_value(&config).unwrap()).unwrap();
         assert!(client
             .query(

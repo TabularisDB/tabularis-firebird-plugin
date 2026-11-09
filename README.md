@@ -28,7 +28,8 @@ The connection uses UTF-8 and SQL dialect 3. A local Firebird server is supporte
 | `get_tables`, `get_columns` | User tables, ordered columns, types, nullability, defaults, primary keys, identity flags and comments. |
 | `get_indexes`, `get_foreign_keys` | Ordered index columns, unique/primary flags, expression source and composite foreign-key mappings with update/delete rules. |
 | Schemas | Empty list; Firebird does not use SQL schemas. |
-| Views, routines | Not implemented; disabled in the manifest. |
+| `get_views`, `get_view_definition`, `get_view_columns` | User views, SQL source and ordered columns; view queries use the normal read-only execution path. |
+| Routines | Not implemented; disabled in the manifest. |
 | Batch metadata / schema snapshot | Return method-not-found so the host can fall back to standard metadata calls. |
 | CRUD, DDL, EXPLAIN | Not implemented. The manifest disables editing and table management. |
 
@@ -60,7 +61,7 @@ For a repeatable live test on Windows:
 ./tests/live-firebird.ps1 -Port 13051
 ```
 
-The script downloads the official portable Firebird 5.0.4 ZIP (verifying a pinned SHA-256), creates an isolated fixture database and random local test credentials under the ignored `target/firebird-test` directory, binds to `127.0.0.1`, runs live catalog/query tests plus a stdio test of the executable, then stops its server. It installs no service. Each run keeps its files under `target` for inspection. Windows CI runs the same script.
+The script downloads the official portable Firebird 5.0.4 ZIP (verifying a pinned SHA-256), creates an isolated fixture database and random local test credentials under the ignored `target/firebird-test` directory, binds to `127.0.0.1`, and runs live catalog/query tests plus a stdio test of the executable. Its `finally` block stops its server and deletes the entire test directory, including the download, extracted server, database, lock files and credentials, on success or failure. It installs no service. It refuses to overwrite a pre-existing test directory. Windows CI runs the same script.
 
 For the live integration test, create a JSON connection file **outside the repository** with `host`, `port`, `database`, `username`, and `password`. Keep credentials out of source control. Then:
 
@@ -85,7 +86,7 @@ This must return an invalid-params error rather than success. The generated `jus
 - `src/handlers/query.rs`: connection checks, query validation and pagination.
 - `src/models.rs`: connection parameter validation.
 - `src/rpc.rs`: JSON-RPC dispatch.
-- `src/handlers/metadata.rs`: catalog discovery; views and routines remain scaffold methods.
+- `src/handlers/metadata.rs`: table and view catalog discovery; routines remain scaffold methods.
 - `src/handlers/crud.rs`, `ddl.rs`: remaining scaffold methods.
 
 ## Publishing
