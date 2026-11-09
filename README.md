@@ -13,10 +13,12 @@ Restart Tabularis or toggle the plugin in Settings. Configure:
 
 - Host: your Firebird server (`localhost` for a local server).
 - Port: `3050` by default.
-- Database: a database alias or a file path **on the server**, not on the plugin machine.
+- Database: on the **Databases** tab, enter a database alias or a file path **on the Firebird server** in the labeled input. Keep **All databases** selected to browse this configured database. Firebird cannot enumerate all databases on a server.
 - Username and password: an existing Firebird database user. No default password is assumed.
 
 The connection uses UTF-8 and SQL dialect 3. A local Firebird server is supported over TCP; embedded mode and TLS configuration are not implemented. Live integration tests pass against Firebird 3.0.14, 4.0.7 and 5.0.4 on Windows. Other patch versions are not individually validated; the metadata queries require Firebird 3+ catalogs.
+
+For a local deployment, run a Firebird server on the same PC and connect to `127.0.0.1:3050` with an absolute local database path or an alias from that server's `databases.conf`. For a remote deployment, enter the server's hostname and a path or alias valid on that server, for example `/srv/firebird/customer.fdb` on Linux. The Firebird service account needs access to that file. The plugin does not create databases, install a server, or open `.fdb` files directly. Server firewall and authentication settings must permit the connection; only expose the port to the intended clients.
 
 ## Implemented
 
@@ -38,6 +40,8 @@ The connection uses UTF-8 and SQL dialect 3. A local Firebird server is supporte
 Each request opens its own connection. `execute_query` accepts the host's positive `page` and `limit` values (`page_size` remains an alias). The response includes `pagination: {page, page_size, total_rows, has_more}`, or `null` for an unpaged request. Pagination streams the full result to compute the total, retaining only the requested page in memory; large queries can therefore be slow. Without a page limit, all rows are returned. Use Firebird's `FIRST`/`SKIP` or `ROWS` clauses to bound expensive queries.
 
 Tabularis 0.32's data-grid limit field generates a generic `LIMIT n`, sometimes inside a `limited_subset` wrapper. The plugin translates those terminal clauses to Firebird `ROWS` syntax, with optional `OFFSET`, without treating quoted names, string literals or comments as SQL clauses. SQL templates already use native `FIRST` syntax.
+
+The host's table **New Console** action also emits `SELECT * FROM "database"."table"`. The plugin removes that qualifier only for this exact query shape and only when it matches the connected database. Firebird SQL entered manually should use unqualified table names; other qualified expressions are passed through and may be rejected by Firebird.
 
 Routine discovery excludes package members and legacy external UDFs. A function's return value is an `OUT` parameter named `RETURN_VALUE`, listed before its inputs. Parameters include the host-required `ordinal_position`. External routines without stored PSQL source return an explicit error for definition requests. If a procedure and function share a name, definition requests can use the host's `routine_type`; parameter requests remain ambiguous because the host supplies no type discriminator for them. Routine discovery does not execute the routines.
 
@@ -88,7 +92,7 @@ This single test checks connectivity, a SELECT result, the transaction's read-on
 
 The live suite also covers empty result headers, exact positive/negative decimals, zero-scale decimals, ordinary floating-point values, NULLs, leap-day dates, four fractional-second digits and reusing a connection after a failed query. Firebird 4/5 additionally test INT128-backed decimals, named zones in summer and winter, a non-whole-hour offset, all 34 DECFLOAT digits, large exponents and special values, also mixed with a text BLOB. The script explicitly skips this newer-type test on Firebird 3, which lacks these types. Workspace tests include the vendored wire driver's tests; Clippy targets plugin code without linting third-party implementation details.
 
-An installed Tabularis 0.32.0 was also checked in Web mode on Windows with an isolated profile and Firebird fixture: driver discovery, saved connection, table and view results, routine parameters/definition, the ER diagram with composite-FK edges, and the grid's explicit row limit. Temporary profile, plugin copy, database and servers were removed afterward. This does not replace a native desktop-window smoke test. For additional host checks, `tests/live-firebird.ps1 -AfterTests { ... }` runs a callback while the fixture is alive and retains automatic cleanup.
+An installed Tabularis 0.32.0 was also checked in Web mode on Windows with an isolated profile and Firebird fixture: driver discovery, saved connection, table and view results, routine parameters/definition, the ER diagram with composite-FK edges, and the grid's explicit row limit. Native Windows desktop verification additionally covers creating a connection through the UI, the server-side database input, invalid-password diagnostics, successful connection-test logs, saving/reconnecting, table results and the table's New Console SELECT. Temporary profiles, plugin copies, databases and servers were removed afterward. The native host hides Generate SQL for read-only drivers; SELECT/UPDATE/DELETE previews are covered by live RPC tests instead. For additional host checks, `tests/live-firebird.ps1 -AfterTests { ... }` runs a callback while the fixture is alive and retains automatic cleanup.
 
 For a direct JSON-RPC smoke test without a server:
 
@@ -109,15 +113,21 @@ This must return an invalid-params error rather than success. The generated `jus
 
 ## Publishing
 
-The included release workflow builds Linux, macOS and Windows bundles when a `v*` tag is pushed. Complete metadata support and live validation before publishing. Submit the released plugin to the Tabularis registry for the [Firebird bounty](https://tabularis.dev/plugins/bounties/firebird).
+The shared package workflow builds and tests Linux x64/ARM64, macOS x64/ARM64 and Windows x64 bundles on native GitHub runners on every push/PR, on manual dispatch, and before a tagged release. Each ZIP includes the executable, `.tabularium`, Apache license and third-party notices. `tests/package.ps1` extracts each bundle and checks executable discovery, JSON-RPC initialization and invalid connection parameters. Packaging includes dotfiles explicitly, so the manifest is present on Windows too. A tag must equal `v` plus the Cargo/manifest version. Linux x64 builds use Ubuntu 22.04 (glibc 2.35); ARM64 uses Ubuntu 24.04 (glibc 2.39). Older Linux runtimes are not validated.
+
+CI validates the manifest with `tests/validate_manifest.py` against the official registry driver schema captured on 2026-11-09 in `tests/driver-manifest.schema.json`. The snapshot avoids HTTP 403 responses from the registry to GitHub runners; refresh it from `https://registry.tabularis.dev/manifest.schema.json?kind=driver` when registry fields change. The strict schema forbids an IDE `$schema` field in the manifest itself.
+
+The [public Firebird request](https://registry.tabularis.dev/api/requests/01M4VG6Z7G81RR5G9A694JCPGR) asks for connection setup, metadata inspection, query execution, type handling and documentation for local/server deployments. Its next step explicitly defines a first read-only feature set; type handling is marked as stretch. This implementation covers those functional areas using local/server TCP connections. The brief does not explicitly settle whether embedded mode is required for final acceptance; it is not implemented or advertised here.
+
+To publish, push `v0.1.0` only after reviewing the candidate. The release workflow uploads the five ZIPs and the standalone `.tabularium` asset. Then submit the repository at [registry.tabularis.dev/submit](https://registry.tabularis.dev/submit), using the GitHub account that owns the existing Firebird claim. Actual registry ingestion, signing and bounty approval happen after publication; schema/package validation does not claim those have occurred.
 
 ## Remaining work
 
-Before a first read-only release:
+External release steps:
 
-- Repeat the Windows Web smoke test in native desktop mode, including new-connection creation, SQL previews and relevant error dialogs. The installed 0.32.0 host's main browsing and ER flows have been checked in Web mode.
-- Validate Linux/macOS builds and release archives, including executable discovery, the manifest, notices and registry ingestion. The release workflow is present but has not been exercised here.
-- Confirm the bounty's exact acceptance criteria and whether a TCP connection to a local server satisfies its local-deployment requirement.
+- Publish the reviewed `v0.1.0` candidate and submit its repository to the registry. Actual registry ingestion/signing cannot be validated before a release exists.
+- Obtain final bounty review, including confirmation that documented local-server TCP deployment satisfies the open brief. The public brief defines a read-only first scope but does not explicitly settle embedded mode.
+- Linux/macOS builds and extracted-package RPC checks are validated on native runners; live Firebird/Tabularis GUI checks on those operating systems remain outside the Windows validation performed here.
 
 Known limits and optional extensions:
 

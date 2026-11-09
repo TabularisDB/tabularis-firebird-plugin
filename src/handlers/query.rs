@@ -45,8 +45,13 @@ pub fn execute_query(id: Value, params: &Value) -> Value {
                 .filter(|s| !s.trim().is_empty())
                 .ok_or_else(|| PluginError::invalid_params("query must be a non-empty string"))?;
             let (offset, limit) = pagination(params)?;
-            let mut client = Client::connect(ConnectionParams::from_value(inner_params(params))?)?;
-            let query = crate::utils::sql::firebird_query(query)?;
+            let connection = ConnectionParams::from_value(inner_params(params))?;
+            let query = crate::utils::sql::unqualify_console_query(
+                query,
+                connection.database.as_deref().unwrap_or_default(),
+            );
+            let query = crate::utils::sql::firebird_query(&query)?;
+            let mut client = Client::connect(connection)?;
             let mut result = client.query(&query, offset, limit)?;
             result["affected_rows"] = json!(0);
             result["pagination"] = match limit {

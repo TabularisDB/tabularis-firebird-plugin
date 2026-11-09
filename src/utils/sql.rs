@@ -1,5 +1,21 @@
 //! Translate the terminal LIMIT clause emitted by Tabularis's generic data-grid filters.
 use crate::error::PluginError;
+use crate::utils::identifiers::quote_identifier;
+
+/// The host's New Console action treats the current database as a SQL schema.
+pub fn unqualify_console_query(sql: &str, database: &str) -> String {
+    let prefix = format!("SELECT * FROM {}.", quote_identifier(database, '"'));
+    if let Some(table) = sql.trim().strip_prefix(&prefix) {
+        let table = table.strip_suffix(';').unwrap_or(table).trim_end();
+        if let Some(name) = table.strip_prefix('"').and_then(|t| t.strip_suffix('"')) {
+            let name = name.replace("\"\"", "\"");
+            if !name.is_empty() && quote_identifier(&name, '"') == table {
+                return format!("SELECT * FROM {table}");
+            }
+        }
+    }
+    sql.into()
+}
 
 pub fn firebird_query(sql: &str) -> Result<String, PluginError> {
     // The data grid wraps an explicit row cap before applying its page filters.
@@ -133,6 +149,22 @@ fn terminal_limit(sql: &str) -> Result<String, PluginError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unqualifies_only_the_host_console_query_for_the_current_database() {
+        assert_eq!(
+            unqualify_console_query("SELECT * FROM \"local-db\".\"odd\"\" table\";", "local-db"),
+            "SELECT * FROM \"odd\"\" table\""
+        );
+        for sql in [
+            "SELECT * FROM \"other-db\".\"T\"",
+            "SELECT * FROM \"local-db\".\"T\" WHERE 1 = 1",
+            "SELECT * FROM \"local-db\".\"T\"; SELECT 2 FROM RDB$DATABASE",
+            "SELECT * FROM \"local-db\".\"T\" /* comment */",
+            "SELECT '\"local-db\".\"T\"' FROM RDB$DATABASE",
+        ] {
+            assert_eq!(unqualify_console_query(sql, "local-db"), sql);
+        }
+    }
     #[test]
     fn translates_terminal_grid_limits() {
         assert_eq!(

@@ -601,6 +601,14 @@ mod tests {
                 {"name":"FK_FB_CHILD_PARENT", "column_name":"PARENT_ID", "ref_table":"FB_PARENT", "ref_column":"ID", "on_update":"CASCADE", "on_delete":"SET NULL", "seq_in_fk":2}
             ])
         );
+        let console_query = format!(
+            "SELECT * FROM {}.\"FB_CHILD\"",
+            crate::utils::identifiers::quote_identifier(config["database"].as_str().unwrap(), '"')
+        );
+        assert_eq!(
+            call("execute_query", json!({"query": console_query}))["total_count"],
+            json!(2)
+        );
         let result = call(
             "execute_query",
             json!({"query":"SELECT LABEL, FLAG, NOTES FROM FB_CHILD ORDER BY ID", "page":2, "limit":1}),
