@@ -1,6 +1,6 @@
 # Firebird driver 0.2.0-beta.1
 
-First prerelease from [TabularisDB/firebird-plugin](https://github.com/TabularisDB/firebird-plugin), containing the current driver-completion work. This is a writable beta; the previously published v0.1.0 remains the read-only stable release in the original repository.
+First prerelease from [TabularisDB/tabularis-firebird-plugin](https://github.com/TabularisDB/tabularis-firebird-plugin), containing the current driver-completion work. This is a writable beta; the previously published v0.1.0 remains the read-only stable release in the original repository.
 
 ## Changes since 0.1.0
 
@@ -21,7 +21,7 @@ First prerelease from [TabularisDB/firebird-plugin](https://github.com/Tabularis
 - Host query-timeout UI support depends on the registry schema; use the plugin timeout setting or explicit connection parameter. A host that discards a cancelled response can temporarily show stale transaction state, although the transaction has been aborted.
 - UTF8 is recommended. Firebird applies the chosen connection character set and rejects text it cannot represent; other legacy codecs have not each had a language-specific live roundtrip.
 
-See [DEVELOPMENT.md](https://github.com/TabularisDB/firebird-plugin/blob/v0.2.0-beta.1/DEVELOPMENT.md) for the complete checklist and transaction semantics.
+See [DEVELOPMENT.md](https://github.com/TabularisDB/tabularis-firebird-plugin/blob/v0.2.0-beta.1/DEVELOPMENT.md) for the complete checklist and transaction semantics.
 
 ## Validation and packages
 

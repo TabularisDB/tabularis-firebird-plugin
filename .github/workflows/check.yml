@@ -5,6 +5,18 @@ on:
   pull_request:
   workflow_call:
 jobs:
+  firebird-linux:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['3', '4', '5']
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test native Linux client against Firebird ${{ matrix.version }}
+        run: bash tests/live-firebird.sh '${{ matrix.version }}'
   packages:
     uses: ./.github/workflows/packages.yml
   check:

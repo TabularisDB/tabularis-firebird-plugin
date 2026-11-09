@@ -20,6 +20,9 @@ mod utils;
 #[allow(dead_code)] // These structs validate deserialization, rather than consume fields.
 mod host_contract_tests;
 
+#[cfg(test)]
+mod failure_tests;
+
 fn main() {
     let active = Arc::new(Mutex::new(HashMap::<String, Arc<control::Control>>::new()));
     let worker_active = active.clone();

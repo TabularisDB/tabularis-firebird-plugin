@@ -1,10 +1,10 @@
-﻿# Firebird — Tabularis Plugin
+# Firebird — Tabularis Plugin
 
 Firebird network driver for [Tabularis](https://github.com/TabularisDB/tabularis), built with a locally patched `rsfbclient-rust` wire driver. No Firebird client DLL is required. The stable v0.1.0 is read-only. The **0.2.0-beta.1 prerelease adds writes, interactive transactions, atomic batches, DDL, prepare-only query plans, roles and character sets**; see [DEVELOPMENT.md](DEVELOPMENT.md) for completed work and remaining limitations.
 
-Development and future releases are maintained in [TabularisDB/firebird-plugin](https://github.com/TabularisDB/firebird-plugin).
+Development and future releases are maintained in [TabularisDB/tabularis-firebird-plugin](https://github.com/TabularisDB/tabularis-firebird-plugin).
 
-Download the current [v0.2.0-beta.1 prerelease](https://github.com/TabularisDB/firebird-plugin/releases/tag/v0.2.0-beta.1) for the new functionality. Its release notes describe compatibility changes and outstanding validation.
+Download the current [v0.2.0-beta.1 prerelease](https://github.com/TabularisDB/tabularis-firebird-plugin/releases/tag/v0.2.0-beta.1) for the new functionality. Its release notes describe compatibility changes and outstanding validation.
 
 [Install from the Tabularis registry](https://registry.tabularis.dev/plugins/firebird) or download the historical [release v0.1.0](https://github.com/lejyfps/tabularis-firebird-plugin/releases/tag/v0.1.0) from the original repository. The registry lists all five platforms and marks the original Firebird request as fulfilled.
 
@@ -101,6 +101,10 @@ For a repeatable live test on Windows:
 ```
 
 The script downloads the official portable Firebird 3.0.14, 4.0.7 or 5.0.4 ZIP (verifying its pinned SHA-256), creates an isolated fixture database and random local test credentials under the ignored `target/firebird-test` directory, binds to `127.0.0.1`, and runs live catalog/query tests plus a stdio test of the executable. Its `finally` block stops its server and deletes the entire test directory, including the download, extracted server, database, lock files and credentials, on success or failure. It installs no service. It refuses to overwrite a pre-existing test directory. Windows CI runs the same script for all three versions.
+
+Linux x64 CI runs the same live Rust suites with `bash tests/live-firebird.sh 3` (or `4`/`5`), using official Firebird Docker images pinned by digest. This requires Docker, Python 3, OpenSSL and Rust on the Linux runner. The script removes its container, anonymous data volume, temporary credentials and any image it newly pulled. The Windows development PC does not need Docker.
+
+Post-beta.1 regression coverage also exercises 100,001-row results, default-limit BLOB overflow, combined-batch limit rollback, eight parallel writers, row-lock conflicts, server-terminated attachments and loss of an already committed transaction's reply. Stdio tests verify queue overload, duplicate IDs and cancellation of queued work. These fixed-size correctness tests do not establish sustained throughput or a strict RSS bound.
 
 For the live integration test, create a JSON connection file **outside the repository** with `host`, `port`, `database`, `username`, and `password`. Keep credentials out of source control. Then:
 

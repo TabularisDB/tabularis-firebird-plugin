@@ -97,6 +97,102 @@ fn connect_timeout_interrupts_a_stalled_handshake() {
 }
 
 #[test]
+fn overloaded_queue_rejects_excess_work_and_still_cancels_running_and_queued_requests() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (accepted, ready) = mpsc::channel();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        accepted.send(()).unwrap();
+        let mut buffer = [0; 2048];
+        while matches!(socket.read(&mut buffer), Ok(count) if count > 0) {}
+    });
+    let mut process = Process(
+        Command::new(env!("CARGO_BIN_EXE_firebird-plugin"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut input = process.0.stdin.take().unwrap();
+    let output = process.0.stdout.take().unwrap();
+    let (sender, responses) = mpsc::channel();
+    let reader = thread::spawn(move || {
+        for line in BufReader::new(output).lines() {
+            if sender
+                .send(serde_json::from_str::<Value>(&line.unwrap()).unwrap())
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+    writeln!(input, "{}", json!({"jsonrpc":"2.0","id":1,"method":"test_connection","params":{"params":{"host":"127.0.0.1","port":port,"database":"unused","username":"test","password":"test","connect_timeout_secs":10}}})).unwrap();
+    input.flush().unwrap();
+    ready.recv_timeout(Duration::from_secs(3)).unwrap();
+    for id in 2..=66 {
+        writeln!(
+            input,
+            "{}",
+            json!({"jsonrpc":"2.0","id":id,"method":"unknown"})
+        )
+        .unwrap();
+    }
+    writeln!(
+        input,
+        "{}",
+        json!({"jsonrpc":"2.0","id":2,"method":"unknown"})
+    )
+    .unwrap();
+    for id in [2, 1] {
+        writeln!(
+            input,
+            "{}",
+            json!({"jsonrpc":"2.0","method":"cancel","params":{"id":id}})
+        )
+        .unwrap();
+    }
+    input.flush().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut codes = std::collections::HashMap::<i64, usize>::new();
+    for _ in 0..67 {
+        let response = responses
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .expect("queue did not drain after cancellation");
+        *codes
+            .entry(response["error"]["code"].as_i64().unwrap())
+            .or_default() += 1;
+    }
+    assert_eq!(codes.get(&-32000), Some(&33));
+    assert_eq!(codes.get(&-32600), Some(&1));
+    assert_eq!(codes.get(&-32800), Some(&2));
+    assert_eq!(codes.get(&-32601), Some(&31));
+    // Reuse the old queued id after completion: no stale active-control entry may remain.
+    writeln!(
+        input,
+        "{}",
+        json!({"jsonrpc":"2.0","id":2,"method":"initialize","params":{}})
+    )
+    .unwrap();
+    input.flush().unwrap();
+    assert_eq!(
+        responses.recv_timeout(Duration::from_secs(2)).unwrap(),
+        json!({"jsonrpc":"2.0","id":2,"result":null})
+    );
+    drop(input);
+    assert!(process.0.wait().unwrap().success());
+    reader.join().unwrap();
+    server.join().unwrap();
+    assert!(
+        responses.try_recv().is_err(),
+        "notifications must not emit responses"
+    );
+}
+
+#[test]
 #[ignore = "mutates an isolated fixture; run tests/live-firebird.ps1"]
 fn live_stdio_sessions_roll_back_on_eof() {
     struct Rpc {
