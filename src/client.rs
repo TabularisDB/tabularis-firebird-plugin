@@ -28,17 +28,23 @@ impl Client {
         let control = control::current();
         control.check()?;
         let _deadline = Deadline::connection(&control, params.connect_timeout_secs);
-        let result = Self::connect_inner(params, control.clone(), false, false);
+        let result = Self::connect_inner(params, control.clone(), false, false, None);
         control.check()?;
         result
     }
 
-    pub fn create_database(params: ConnectionParams) -> Result<Self, PluginError> {
+    pub fn create_database(
+        params: ConnectionParams,
+        page_size: Option<u32>,
+    ) -> Result<Self, PluginError> {
         let control = control::current();
         control.check()?;
         let _deadline = Deadline::connection(&control, params.connect_timeout_secs);
-        let result = Self::connect_inner(params, control.clone(), true, false);
-        control.check()?;
+        // Keep a positive creation acknowledgement so restore can clean up after late cancellation.
+        let result = Self::connect_inner(params, control.clone(), true, false, page_size);
+        if result.as_ref().is_err_and(|error| error.code != -32002) {
+            control.check()?;
+        }
         result
     }
 
@@ -48,7 +54,7 @@ impl Client {
         let control = control::current();
         control.check()?;
         let _deadline = Deadline::connection(&control, params.connect_timeout_secs);
-        let result = Self::connect_inner(params, control.clone(), false, true);
+        let result = Self::connect_inner(params, control.clone(), false, true, None);
         control.check()?;
         result
     }
@@ -58,6 +64,7 @@ impl Client {
         control: Arc<Control>,
         create: bool,
         no_database_triggers: bool,
+        page_size: Option<u32>,
     ) -> Result<Self, PluginError> {
         let database = params
             .database
@@ -118,11 +125,12 @@ impl Client {
         .map_err(firebird_error)?;
         wire.set_blob_limit(crate::limits::current().blob_bytes);
         let database = if create {
-            wire.create_database(&config, None, Dialect::D3)
+            wire.create_database(&config, page_size, Dialect::D3)
+                .map_err(database_creation_error)?
         } else {
             wire.attach_database(&config, Dialect::D3, no_database_triggers)
-        }
-        .map_err(firebird_error)?;
+                .map_err(firebird_error)?
+        };
         Ok(Self {
             wire,
             database,
@@ -641,6 +649,15 @@ fn connect_socket(
 fn firebird_error(error: rsfbclient_core::FbError) -> PluginError {
     PluginError::internal(format!("Firebird: {error}"))
 }
+fn database_creation_error(error: rsfbclient_core::FbError) -> PluginError {
+    if matches!(error, rsfbclient_core::FbError::Sql { .. }) {
+        return firebird_error(error);
+    }
+    PluginError {
+        code: -32002,
+        message: format!("Database creation outcome is unknown; the target may already exist. Verify it before retrying. Automatic deletion was skipped because ownership could not be confirmed: {error}"),
+    }
+}
 fn collect_rows(
     cursor: impl Iterator<Item = Result<Row, rsfbclient_core::FbError>>,
     columns: Vec<String>,
@@ -711,6 +728,22 @@ fn sql_value(value: SqlType) -> Result<Value, PluginError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn creation_distinguishes_rejection_from_unknown_outcome() {
+        assert_eq!(
+            database_creation_error(rsfbclient_core::FbError::Sql {
+                code: -902,
+                msg: "already exists".into()
+            })
+            .code,
+            -32603
+        );
+        let failure = database_creation_error(
+            std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "lost creation reply").into(),
+        );
+        assert_eq!(failure.code, -32002);
+        assert!(failure.message.contains("ownership could not be confirmed"));
+    }
     #[test]
     fn limits_buffered_rows_and_bytes_without_returning_partial_results() {
         let bounds = crate::limits::Limits {

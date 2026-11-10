@@ -19,3 +19,15 @@ $request=@{jsonrpc='2.0';id=2;method='execute_query';params=@{params=$config;que
 $response=$request | & $plugin | ConvertFrom-Json
 if($LASTEXITCODE -ne 0 -or $response.error -or $response.result.rows[0][0] -ne 2){throw 'isql restored data did not match'}
 Write-Host 'Independent isql whole-database restore passed.'
+$legacy="$($config.host)/$($config.port):$($config.database).dialect1.fdb"
+"SET SQL DIALECT 1;`nCREATE DATABASE '$legacy' DEFAULT CHARACTER SET UTF8;`nQUIT;" | & $IsqlPath -bail -quiet
+if($LASTEXITCODE -ne 0){throw 'Dialect 1 guard fixture creation failed'}
+$config.database += '.dialect1.fdb'
+$before=(Get-FileHash -Algorithm SHA256 -LiteralPath $dump).Hash
+$request=@{jsonrpc='2.0';id=3;method='export_database_sql';params=@{params=$config;file_path=$dump}}|ConvertTo-Json -Depth 8 -Compress
+$response=$request | & $plugin | ConvertFrom-Json
+if(!$response.error -or $response.error.message -notlike '*Dialect 3*' -or (Get-FileHash -Algorithm SHA256 -LiteralPath $dump).Hash -ne $before){throw 'Dialect 1 export did not protect the previous dump'}
+$request=@{jsonrpc='2.0';id=4;method='import_database_sql';params=@{params=$config;file_path=$dump;create_database=$false}}|ConvertTo-Json -Depth 8 -Compress
+$response=$request | & $plugin | ConvertFrom-Json
+if(!$response.error -or $response.error.message -notlike '*Dialect 3*'){throw 'Dialect 1 import target was not rejected'}
+Write-Host 'Dialect 1 transfer guards preserve the previous export and reject an incompatible target.'

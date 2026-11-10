@@ -48,7 +48,7 @@ For a local deployment, run a Firebird server on the same PC and connect to `127
 | `get_views`, `get_view_definition`, `get_view_columns` | User views, SQL source and ordered columns; view queries use the normal read-only execution path. |
 | `get_routines`, `get_routine_parameters`, `get_routine_definition` | Top-level and public package routines, legacy UDF parameters, ordered IN/OUT arguments and PSQL/package source. |
 | `build_routine_call_sql` | Firebird-specific call previews with catalog-ordered arguments, including selectable procedures and package functions. |
-| `routine_create_template`, `get_routine_edit_script`, `drop_routine` | Creation templates, catalog-backed PSQL editing and type-specific drops. Preserve declarations, comments, grants and SQL SECURITY; package edits include the whole body and legacy UDF edits alter library bindings. Package-member drops and engine-specific UDR edits return explicit errors. |
+| `routine_create_template`, `get_routine_edit_script`, `drop_routine` | Creation templates, catalog-backed editing and type-specific drops. Preserve declarations, comments, grants and SQL SECURITY; package edits include the whole body, legacy UDF edits alter library bindings and UDR declarations retain their engine/entrypoint/body. Package-member drops return an explicit error. External modules must be available on the server. |
 | Trigger management | Discover table/database/DDL triggers, reconstruct PSQL definitions and create/alter/drop triggers with their status, position and events preserved. |
 | `get_sequences` | Read initial values, increments and comments without advancing a sequence. This is an extension RPC; the host has no sequence explorer yet. |
 | `get_schema_snapshot` | All user tables with columns and foreign keys for the ER diagram; views and system tables are excluded. |
@@ -84,14 +84,22 @@ columns, sequences and counters, PSQL routines/packages, legacy UDF and BLOB-fil
 declarations, indexes and composite constraints, triggers, comments, role system
 privileges, grants and local authentication mappings. External library declarations
 require the corresponding modules/plugins on the target server.
+Database/table SQL-security defaults and replication publication membership,
+active state and automatic inclusion are preserved. Replication is disabled
+during reconstruction and its source settings are restored at the end.
 
 Restore validates a private snapshot of the entire file before connecting to the
 target. Choose a new server-side path/alias to create a database, or an existing
-empty database. It requires the source engine major version and object owner;
+empty database. It requires SQL Dialect 3, the source engine major version and object owner;
 the attachment encoding may differ from the database default. Creation never
 overwrites an existing database. A failed newly-created restore attempts bounded
 cleanup and reports any cleanup failure; an existing empty target can remain
-partly populated after a SQL error. Generator counters are nontransactional and
+partly populated after a SQL error. New databases retain the source page size;
+an existing target must have at least that page size to accommodate its indexes.
+If the creation reply is lost, ownership cannot be confirmed: the error reports
+an unknown outcome and requires checking the target before retrying, without
+automatically deleting a potentially preexisting database.
+Generator counters are nontransactional and
 are sampled at the end of export. This is a logical SQL transfer, not a physical
 backup of server configuration, authentication accounts or encryption keys.
 
@@ -104,7 +112,8 @@ requests retain the existing table renderer.
 
 The full SQL file can also be restored into an independently created empty
 database with `isql -bail -nodbtriggers -ch UTF8 -input backup.sql <target>`.
-Use the same engine major version, owner and database default charset. The
+Use the same engine major version, owner and database default charset, with at
+least the source database's page size. The
 `-nodbtriggers` option suppresses database/DDL triggers during reconstruction,
 as the plugin restore does; see the [Firebird isql documentation](https://firebirdsql.org/file/documentation/html/en/firebirddocs/isql/firebird-isql.html).
 The Windows Firebird 3/4/5 fixtures verify this independent import path.

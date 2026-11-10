@@ -1,15 +1,18 @@
 //! Trigger metadata and Firebird-native create/edit/drop scripts.
 use super::{
     crud::identifier,
-    metadata::{connect, object_name, respond},
+    metadata::{connect, object_name, respond, security_clause},
 };
 use crate::error::PluginError;
-use rsfbclient_core::SqlType;
+use rsfbclient_core::{
+    SqlType, TrDataAccessMode, TrIsolationLevel, TrLockResolution, TransactionConfiguration,
+};
 use serde_json::{json, Value};
 
 const SQL: &str = r#"SELECT TRIM(RDB$TRIGGER_NAME) AS "name", COALESCE(TRIM(RDB$RELATION_NAME),'') AS "table_name",
     RDB$TRIGGER_TYPE AS "type_code", RDB$TRIGGER_SOURCE AS "definition", RDB$TRIGGER_SEQUENCE AS "position",
-    (COALESCE(RDB$TRIGGER_INACTIVE,0)=0) AS "active"
+    (COALESCE(RDB$TRIGGER_INACTIVE,0)=0) AS "active",
+    TRIM(RDB$ENGINE_NAME) AS "engine", TRIM(RDB$ENTRYPOINT) AS "entrypoint"
     FROM RDB$TRIGGERS WHERE COALESCE(RDB$SYSTEM_FLAG,0)=0"#;
 
 pub(super) fn event(code: i64) -> (String, String) {
@@ -153,7 +156,13 @@ pub fn get_trigger_definition(id: Value, params: &Value) -> Value {
         id,
         (|| {
             let name = object_name(params, "trigger")?;
-            let rows = connect(params)?.query_objects(
+            let mut client = connect(params)?;
+            client.begin(TransactionConfiguration {
+                data_access: TrDataAccessMode::ReadOnly,
+                isolation: TrIsolationLevel::Concurrency,
+                lock_resolution: TrLockResolution::NoWait,
+            })?;
+            let rows = client.query_objects(
                 &format!("{SQL} AND RDB$TRIGGER_NAME = ?"),
                 vec![SqlType::Text(name.into())],
             )?;
@@ -162,11 +171,11 @@ pub fn get_trigger_definition(id: Value, params: &Value) -> Value {
                     .next()
                     .ok_or_else(|| PluginError::invalid_params("Trigger does not exist"))?,
             )?;
-            let source = row["definition"].as_str().ok_or_else(|| {
-                PluginError::invalid_params(
-                    "Trigger PSQL source is unavailable (for example, an external trigger)",
-                )
-            })?;
+            let source = body(
+                row["definition"].as_str(),
+                row["engine"].as_str(),
+                row["entrypoint"].as_str(),
+            )?;
             let timing = row["timing"].as_str().unwrap();
             let event = row["event"].as_str().unwrap();
             if timing == "UNKNOWN" || event.contains("UNKNOWN") {
@@ -181,7 +190,7 @@ pub fn get_trigger_definition(id: Value, params: &Value) -> Value {
                 format!(" FOR {}", identifier(table)?)
             };
             Ok(json!(format!(
-                "CREATE OR ALTER TRIGGER {}{} {} {} {} POSITION {}\n{}",
+                "CREATE OR ALTER TRIGGER {}{} {} {} {} POSITION {}{}\n{}",
                 identifier(name)?,
                 table,
                 if row["active"] == true {
@@ -192,10 +201,27 @@ pub fn get_trigger_definition(id: Value, params: &Value) -> Value {
                 timing,
                 event,
                 row["position"].as_i64().unwrap_or(0),
+                security_clause(&mut client, "RDB$TRIGGERS", "RDB$TRIGGER_NAME", name)?,
                 source
             )))
         })(),
     )
+}
+
+pub(super) fn body(
+    source: Option<&str>,
+    engine: Option<&str>,
+    entrypoint: Option<&str>,
+) -> Result<String, PluginError> {
+    if let Some(engine) = engine.filter(|value| !value.is_empty()) {
+        let entrypoint = entrypoint.ok_or_else(|| {
+            PluginError::invalid_params("External trigger entrypoint is unavailable")
+        })?;
+        return super::routine_ddl::external_clause(engine, entrypoint, source);
+    }
+    source
+        .map(str::to_owned)
+        .ok_or_else(|| PluginError::invalid_params("Trigger PSQL source is unavailable"))
 }
 
 pub fn mutate(id: Value, params: &Value, drop: bool) -> Value {
@@ -249,6 +275,26 @@ pub fn get_sequences(id: Value, params: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn external_trigger_bindings_are_quoted_without_requiring_psql_source() {
+        assert_eq!(
+            body(None, Some("UDR"), Some("module!entry'point")).unwrap(),
+            "EXTERNAL NAME 'module!entry''point' ENGINE \"UDR\""
+        );
+        assert_eq!(
+            body(Some("AS BEGIN END"), None, None).unwrap(),
+            "AS BEGIN END"
+        );
+        assert!(body(None, None, None).is_err());
+        assert!(body(None, Some("UDR"), None).is_err());
+        assert_eq!(
+            body(Some("config='x'"), Some("UDR"), Some("module!entry")).unwrap(),
+            "EXTERNAL NAME 'module!entry' ENGINE \"UDR\"\nAS 'config=''x'''"
+        );
+        assert!(body(Some(""), Some("UDR"), Some("module!entry"))
+            .unwrap()
+            .ends_with("AS ''"));
+    }
     #[test]
     fn decodes_trigger_permutations_database_and_ddl_events() {
         assert_eq!(event(1), ("BEFORE".into(), "INSERT".into()));
@@ -326,6 +372,14 @@ mod tests {
             call("create_trigger", json!({"trigger_sql":sql}));
         }
         assert_eq!(call("get_triggers", json!({})), rows);
+        let mut security_client = connect(&json!({"params":config})).unwrap();
+        if security_client.query_objects("SELECT COUNT(*) AS N FROM RDB$RELATION_FIELDS WHERE RDB$RELATION_NAME='RDB$TRIGGERS' AND RDB$FIELD_NAME='RDB$SQL_SECURITY'",vec![]).unwrap()[0]["N"]==1 {
+            call("create_trigger",json!({"trigger_sql":"CREATE TRIGGER FB_RPC_SECURITY FOR FB_CHILD INACTIVE BEFORE INSERT SQL SECURITY DEFINER AS BEGIN END"}));
+            let definition=call("get_trigger_definition",json!({"trigger_name":"FB_RPC_SECURITY"}));
+            assert!(definition.as_str().unwrap().contains("SQL SECURITY DEFINER"));
+            call("create_trigger",json!({"trigger_sql":definition}));
+            call("drop_trigger",json!({"trigger_name":"FB_RPC_SECURITY"}));
+        }
         call(
             "create_trigger",
             json!({"trigger_sql":"CREATE TRIGGER FB_RPC_DROP FOR FB_CHILD INACTIVE AFTER UPDATE AS BEGIN END"}),

@@ -47,6 +47,31 @@ Windows live fixture. Host transfer timeouts retain explicit user settings
 without inheriting the ordinary two-minute default. All five new UI messages
 are translated in all thirteen locales.
 Candidate CI/release evidence is appended after completion.
+Final regressions additionally preserve database/GTT/trigger SQL-security
+settings, publication membership/active/automatic flags, and the source page
+size. The 16-KiB fixture contains a UTF-8 primary key that exceeds an 8-KiB
+database's index limit. This exposed and fixed the wire DPB page-size integer's
+byte order; both DPB encodings and actual database page sizes are checked.
+An export of 100,001 rows passes the normal buffered-result limit without
+truncation. Cancellation while writing preserves the prior dump and removes
+the private pending file. Cancellation during a restored SQL statement removes
+the newly created database. Dialect-1 sources/targets are rejected before
+publishing/modifying data. Lost creation replies report unknown ownership,
+without deleting an unconfirmed target or blindly retrying creation.
+
+External UDR declarations retain quoted entrypoints and quoted engine bodies;
+trigger and routine edit scripts support those declarations as well. Binding
+serialization is unit-tested; execution of application-specific external
+modules requires those modules on the target and is outside the fixture.
+
+The [native desktop workflow](https://github.com/TabularisDB/tabularis-firebird-plugin/actions/runs/42845883630)
+passed all five jobs at plugin source `9fb2807` with Host `d13cc8fa`: Windows
+x64, Linux x64/ARM64 and macOS Intel/Apple Silicon. The final additional metadata
+changes are covered by the subsequent source matrix and local live suites.
+The [macOS Firebird 3/4 workflow](https://github.com/TabularisDB/tabularis-firebird-plugin/actions/runs/42845555002)
+passed all four jobs at `45a8f6e`. These use native clients with isolated x64
+servers in a disposable emulated Linux VM on CI; no VM is installed locally.
+
 The successful two-hour baseline soak run was 42813658201 at a606c9d; it is
 evidence for the prior runtime, not a Beta.7 measurement.
 

@@ -21,6 +21,27 @@ pub(super) fn connect(params: &Value) -> Result<Client, PluginError> {
     Client::connect(ConnectionParams::from_value(inner_params(params))?)
 }
 
+pub(super) fn security_clause(
+    client: &mut Client,
+    table: &str,
+    key: &str,
+    value: &str,
+) -> Result<String, PluginError> {
+    if client.query_objects("SELECT COUNT(*) AS N FROM RDB$RELATION_FIELDS WHERE RDB$RELATION_NAME=? AND RDB$FIELD_NAME='RDB$SQL_SECURITY'",vec![SqlType::Text(table.into())])?[0]["N"]!=1 {
+        return Ok(String::new());
+    }
+    let rows = client.query_objects(
+        &format!("SELECT RDB$SQL_SECURITY AS S FROM {table} WHERE {key}=?"),
+        vec![SqlType::Text(value.into())],
+    )?;
+    Ok(match rows.first().and_then(|row| row["S"].as_bool()) {
+        Some(true) => " SQL SECURITY DEFINER",
+        Some(false) => " SQL SECURITY INVOKER",
+        None => "",
+    }
+    .into())
+}
+
 pub(super) fn object_name<'a>(params: &'a Value, key: &str) -> Result<&'a str, PluginError> {
     params
         .get(format!("{key}_name"))

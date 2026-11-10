@@ -248,7 +248,7 @@ fn build_dpb(
     if let Some(ps) = page_size {
         params.push(DpbData {
             tag: ibase::isc_dpb_page_size as u8,
-            data: ps.to_be_bytes().to_vec().into(),
+            data: ps.to_le_bytes().to_vec().into(),
         });
     }
 
@@ -1597,7 +1597,7 @@ mod tests {
     use rsfbclient_core::charset::UTF_8;
 
     #[test]
-    fn database_creation_keeps_the_default_charset_in_both_dpb_encodings() {
+    fn database_creation_keeps_charset_and_little_endian_page_size_in_both_dpbs() {
         for user in ["SYSDBA".to_string(), "x".repeat(300)] {
             let mut request = create(
                 "owned.fdb",
@@ -1605,7 +1605,7 @@ mod tests {
                 "test",
                 ProtocolVersion::V13,
                 UTF_8,
-                None,
+                Some(16384),
                 None,
                 Dialect::D3,
                 None,
@@ -1624,6 +1624,14 @@ mod tests {
             }
             expected.extend_from_slice(b"UTF8");
             assert!(dpb.ends_with(&expected));
+            let mut page = vec![ibase::isc_dpb_page_size as u8];
+            if dpb[0] == ibase::isc_dpb_version2 as u8 {
+                page.extend_from_slice(&4u32.to_le_bytes());
+            } else {
+                page.push(4);
+            }
+            page.extend_from_slice(&16384u32.to_le_bytes());
+            assert!(dpb.windows(page.len()).any(|bytes| bytes == page));
         }
     }
 

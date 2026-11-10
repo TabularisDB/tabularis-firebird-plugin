@@ -2,7 +2,7 @@
 use super::{
     crud::identifier,
     export::literal,
-    metadata::{respond, FIELD_TYPE_SQL},
+    metadata::{respond, security_clause, FIELD_TYPE_SQL},
     routine_ddl,
     routines::Name,
     triggers,
@@ -57,26 +57,6 @@ fn source(row: &Value, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn security_clause(
-    client: &mut Client,
-    table: &str,
-    key: &str,
-    value: &str,
-) -> Result<String, PluginError> {
-    if !has_column(client, table, "RDB$SQL_SECURITY")? {
-        return Ok(String::new());
-    }
-    let rows = client.query_objects(
-        &format!("SELECT RDB$SQL_SECURITY AS S FROM {table} WHERE {key}=?"),
-        vec![SqlType::Text(value.into())],
-    )?;
-    Ok(match rows.first().and_then(|row| row["S"].as_bool()) {
-        Some(true) => " SQL SECURITY DEFINER",
-        Some(false) => " SQL SECURITY INVOKER",
-        None => "",
-    }
-    .into())
-}
 fn has_column(client: &mut Client, table: &str, column: &str) -> Result<bool, PluginError> {
     Ok(client.query_objects("SELECT COUNT(*) AS N FROM RDB$RELATION_FIELDS WHERE RDB$RELATION_NAME=? AND RDB$FIELD_NAME=?",vec![SqlType::Text(table.into()),SqlType::Text(column.into())])?[0]["N"]==1)
 }
@@ -108,6 +88,7 @@ struct Schema {
     after: Vec<String>,
     tables: Vec<Table>,
     header: Value,
+    final_sql: Vec<String>,
 }
 
 fn comment(statements: &mut Vec<String>, kind: &str, target: &str, value: &Value) {
@@ -244,12 +225,12 @@ fn routine(client: &mut Client, row: &Value, stub: bool) -> Result<String, Plugi
     }
     if let Some(engine) = source(&header, "engine") {
         return Ok(format!(
-            "{sql} EXTERNAL NAME {} ENGINE {}{}",
-            quoted(text(&header, "entrypoint")?),
-            identifier(&engine)?,
-            source(&header, "source")
-                .map(|body| format!("\nAS\n{body}"))
-                .unwrap_or_default()
+            "{sql} {}",
+            routine_ddl::external_clause(
+                &engine,
+                text(&header, "entrypoint")?,
+                header["source"].as_str()
+            )?
         ));
     }
     if stub {
@@ -380,18 +361,27 @@ fn catalog(client: &mut Client) -> Result<Schema, PluginError> {
         .next()
         .and_then(|n| n.parse::<u64>().ok())
         .ok_or_else(|| error("Unknown engine version"))?;
+    let layout = client.query_objects(
+        "SELECT MON$PAGE_SIZE AS N, MON$SQL_DIALECT AS D FROM MON$DATABASE",
+        vec![],
+    )?;
+    if layout[0]["D"] != 3 {
+        return Err(error("Full SQL transfers require a SQL Dialect 3 database"));
+    }
+    let page_size = layout[0]["N"].clone();
     let mut schema = Schema {
         before: vec![],
         after: vec![],
         tables: vec![],
-        header: json!({"engine_major":major,"charset":database[0]["charset"],"owner":database[0]["owner"]}),
+        header: json!({"engine_major":major,"charset":database[0]["charset"],"owner":database[0]["owner"],"page_size":page_size}),
+        final_sql: vec![],
     };
     if has_column(client, "RDB$DATABASE", "RDB$SQL_SECURITY")? {
         let security =
             client.query_objects("SELECT RDB$SQL_SECURITY AS S FROM RDB$DATABASE", vec![])?;
         if let Some(security) = security[0]["S"].as_bool() {
             schema.before.push(format!(
-                "ALTER DATABASE SET SQL SECURITY {}",
+                "ALTER DATABASE SET DEFAULT SQL SECURITY {}",
                 if security { "DEFINER" } else { "INVOKER" }
             ));
         }
@@ -406,6 +396,8 @@ fn catalog(client: &mut Client) -> Result<Schema, PluginError> {
         "RDB$ROLES",
         "RDB$FIELDS",
         "RDB$COLLATIONS",
+        "RDB$TRIGGERS",
+        "RDB$FILTERS",
     ] {
         if has_column(client,catalog,"RDB$OWNER_NAME")? && client.query_objects(&format!("SELECT COUNT(*) AS N FROM {catalog} WHERE COALESCE(RDB$SYSTEM_FLAG,0)=0 AND RDB$OWNER_NAME<>CURRENT_USER"),vec![])?[0]["N"]!=0 {
             return Err(error("SQL export cannot preserve objects owned by another user; export as their owner or use an engine backup"));
@@ -564,7 +556,7 @@ fn catalog(client: &mut Client) -> Result<Schema, PluginError> {
         }
         table_statements.insert(table_name.clone(), schema.before.len());
         schema.before.push(format!(
-            "CREATE {}TABLE {} (\n{}\n){}{}",
+            "CREATE {}TABLE {} (\n{}\n){}",
             if matches!(relation["type"].as_i64(), Some(4 | 5)) {
                 "GLOBAL TEMPORARY "
             } else {
@@ -576,9 +568,15 @@ fn catalog(client: &mut Client) -> Result<Schema, PluginError> {
                 Some(4) => " ON COMMIT PRESERVE ROWS",
                 Some(5) => " ON COMMIT DELETE ROWS",
                 _ => "",
-            },
-            security_clause(client, "RDB$RELATIONS", "RDB$RELATION_NAME", &table_name)?
+            }
         ));
+        let security = security_clause(client, "RDB$RELATIONS", "RDB$RELATION_NAME", &table_name)?;
+        if !security.is_empty() {
+            // GTT CREATE syntax omits SQL SECURITY, but ALTER TABLE supports it.
+            schema
+                .before
+                .push(format!("ALTER TABLE {} ALTER{security}", name(&relation)?));
+        }
         comment(
             &mut schema.after,
             "TABLE",
@@ -733,16 +731,57 @@ fn catalog(client: &mut Client) -> Result<Schema, PluginError> {
     schema.before.extend(package_bodies);
     schema.before.extend(deferred_defaults);
     indexes(client, &mut schema)?;
-    for trigger in client.query_objects("SELECT TRIM(RDB$TRIGGER_NAME) AS \"name\", TRIM(RDB$RELATION_NAME) AS \"table\", RDB$TRIGGER_TYPE AS \"type\", RDB$TRIGGER_SOURCE AS \"source\", RDB$TRIGGER_SEQUENCE AS \"position\", RDB$TRIGGER_INACTIVE AS \"inactive\", RDB$DESCRIPTION AS \"comment\" FROM RDB$TRIGGERS WHERE COALESCE(RDB$SYSTEM_FLAG,0)=0 ORDER BY RDB$TRIGGER_NAME",vec![])? {
+    for trigger in client.query_objects("SELECT TRIM(RDB$TRIGGER_NAME) AS \"name\", TRIM(RDB$RELATION_NAME) AS \"table\", RDB$TRIGGER_TYPE AS \"type\", RDB$TRIGGER_SOURCE AS \"source\", TRIM(RDB$ENGINE_NAME) AS \"engine\", TRIM(RDB$ENTRYPOINT) AS \"entrypoint\", RDB$TRIGGER_SEQUENCE AS \"position\", RDB$TRIGGER_INACTIVE AS \"inactive\", RDB$DESCRIPTION AS \"comment\" FROM RDB$TRIGGERS WHERE COALESCE(RDB$SYSTEM_FLAG,0)=0 ORDER BY RDB$TRIGGER_NAME",vec![])? {
         let (timing,event)=triggers::event(integer(&trigger,"type")?);
         if timing=="UNKNOWN"||event.contains("UNKNOWN") {return Err(error("Unknown trigger event cannot be exported"));}
         let table=source(&trigger,"table").map(|t|identifier(&t).map(|t|format!(" FOR {t}"))).transpose()?.unwrap_or_default();
-        schema.after.push(format!("CREATE TRIGGER {}{table} {} {timing} {event} POSITION {}{}\n{}",name(&trigger)?,if trigger["inactive"]==1 {"INACTIVE"}else{"ACTIVE"},trigger["position"].as_i64().unwrap_or(0),security_clause(client,"RDB$TRIGGERS","RDB$TRIGGER_NAME",text(&trigger,"name")?)?,text(&trigger,"source")?));
+        schema.after.push(format!("CREATE TRIGGER {}{table} {} {timing} {event} POSITION {}{}\n{}",name(&trigger)?,if trigger["inactive"]==1 {"INACTIVE"}else{"ACTIVE"},trigger["position"].as_i64().unwrap_or(0),security_clause(client,"RDB$TRIGGERS","RDB$TRIGGER_NAME",text(&trigger,"name")?)?,triggers::body(trigger["source"].as_str(),trigger["engine"].as_str(),trigger["entrypoint"].as_str())?));
         comment(&mut schema.after,"TRIGGER",&name(&trigger)?,&trigger["comment"]);
     }
     permissions(client, &mut schema)?;
     mappings(client, &mut schema)?;
+    publication(client, &mut schema)?;
     Ok(schema)
+}
+
+fn publication(client: &mut Client, schema: &mut Schema) -> Result<(), PluginError> {
+    if !has_column(client, "RDB$PUBLICATIONS", "RDB$ACTIVE_FLAG")? {
+        return Ok(());
+    }
+    let rows = client.query_objects("SELECT TRIM(RDB$PUBLICATION_NAME) AS \"name\", RDB$ACTIVE_FLAG AS \"active\", RDB$AUTO_ENABLE AS \"automatic\" FROM RDB$PUBLICATIONS", vec![])?;
+    if rows.len() != 1 || rows[0]["name"] != "RDB$DEFAULT" {
+        return Err(error("Unknown replication publication cannot be exported"));
+    }
+    let automatic = integer(&rows[0], "automatic")?;
+    let active = integer(&rows[0], "active")?;
+    if !matches!(automatic, 0 | 1) || !matches!(active, 0 | 1) {
+        return Err(error("Unknown replication publication state"));
+    }
+    // Do not replicate reconstruction writes, including into an existing empty target.
+    schema.before.splice(
+        0..0,
+        [
+            "ALTER DATABASE DISABLE PUBLICATION".into(),
+            "ALTER DATABASE EXCLUDE ALL FROM PUBLICATION".into(),
+        ],
+    );
+    if automatic == 1 {
+        schema
+            .final_sql
+            .push("ALTER DATABASE INCLUDE ALL TO PUBLICATION".into());
+    }
+    for table in client.query_objects("SELECT TRIM(t.RDB$RELATION_NAME) AS \"name\", EXISTS(SELECT 1 FROM RDB$PUBLICATION_TABLES p WHERE p.RDB$TABLE_NAME=t.RDB$RELATION_NAME AND p.RDB$PUBLICATION_NAME='RDB$DEFAULT') AS \"published\" FROM RDB$RELATIONS t WHERE COALESCE(t.RDB$SYSTEM_FLAG,0)=0 AND t.RDB$RELATION_TYPE=0 AND t.RDB$VIEW_BLR IS NULL ORDER BY t.RDB$RELATION_NAME", vec![])? {
+        let published = table["published"].as_bool().ok_or_else(||error("Missing publication membership"))?;
+        if published != (automatic == 1) {
+            schema.final_sql.push(format!("ALTER DATABASE {} TABLE {} {} PUBLICATION", if published {"INCLUDE"} else {"EXCLUDE"}, name(&table)?, if published {"TO"} else {"FROM"}));
+        }
+    }
+    if active == 1 {
+        schema
+            .final_sql
+            .push("ALTER DATABASE ENABLE PUBLICATION".into());
+    }
+    Ok(())
 }
 
 fn indexes(client: &mut Client, schema: &mut Schema) -> Result<(), PluginError> {
@@ -1091,6 +1130,9 @@ fn export(params: &Value) -> Result<Value, PluginError> {
     for sql in generator_states(&mut client, &schema)? {
         statement(&mut writer, &sql)?;
     }
+    for sql in &schema.final_sql {
+        statement(&mut writer, sql)?;
+    }
     statement(&mut writer, "COMMIT")?;
     client.finish(TrOp::Rollback)?;
     writeln!(writer, "SET TERM ; ^").map_err(io)?;
@@ -1132,6 +1174,12 @@ fn read_header(reader: &mut impl BufRead) -> Result<Value, PluginError> {
         || header["owner"].as_str().is_none()
     {
         return Err(error("Invalid SQL dump header"));
+    }
+    if header
+        .get("page_size")
+        .is_some_and(|size| !matches!(size.as_u64(), Some(4096 | 8192 | 16384 | 32768)))
+    {
+        return Err(error("Invalid SQL dump database page size"));
     }
     if line(reader)? != "SET SQL DIALECT 3;\n" || line(reader)? != "SET TERM ^ ;\n" {
         return Err(error("SQL dump prologue is invalid"));
@@ -1226,7 +1274,10 @@ fn restore(params: &Value) -> Result<Value, PluginError> {
         _ => return Err(error("create_database must be boolean")),
     };
     if create {
-        drop(Client::create_database(connection.clone())?);
+        drop(Client::create_database(
+            connection.clone(),
+            header["page_size"].as_u64().map(|size| size as u32),
+        )?);
     }
     let result = (|| {
         let mut client = Client::connect_without_database_triggers(connection.clone())?;
@@ -1252,6 +1303,21 @@ fn restore(params: &Value) -> Result<Value, PluginError> {
                 != header["engine_major"].as_u64()
         {
             return Err(error("Restore requires the same engine major version, database character set and object owner"));
+        }
+        let layout = client.query_objects(
+            "SELECT MON$PAGE_SIZE AS N, MON$SQL_DIALECT AS D FROM MON$DATABASE",
+            vec![],
+        )?;
+        if layout[0]["D"] != 3 {
+            return Err(error("Full SQL restore requires a SQL Dialect 3 target"));
+        }
+        if let Some(required) = header["page_size"].as_u64() {
+            let actual = layout[0]["N"]
+                .as_u64()
+                .ok_or_else(|| error("Missing target database page size"))?;
+            if actual < required {
+                return Err(error("Restore target page size is smaller than the source; create a new database or a target with at least the source page size"));
+            }
         }
         for table in [
             "RDB$RELATIONS",
@@ -1403,9 +1469,18 @@ mod tests {
             databases: vec![],
             file: file.clone(),
         };
-        let mut client =
-            Client::create_database(ConnectionParams::from_value(&original).unwrap()).unwrap();
+        let mut client = Client::create_database(
+            ConnectionParams::from_value(&original).unwrap(),
+            Some(16384),
+        )
+        .unwrap();
         cleanup.databases.push(original.clone());
+        assert_eq!(
+            client
+                .query("SELECT MON$PAGE_SIZE FROM MON$DATABASE", 0, None)
+                .unwrap()["rows"][0][0],
+            16384
+        );
         assert_eq!(
             client
                 .query(
@@ -1442,6 +1517,7 @@ mod tests {
             "CREATE TABLE E_PARENT (TENANT INTEGER, ID INTEGER, LABEL E_LABEL, CONSTRAINT E_PPK PRIMARY KEY(TENANT,ID))",
             "CREATE TABLE E_CHILD (ID BIGINT GENERATED BY DEFAULT AS IDENTITY (START WITH 10), TENANT INTEGER, PARENT_ID INTEGER, AMOUNT E_AMOUNT, BIN BLOB SUB_TYPE BINARY, NOTES BLOB SUB_TYPE TEXT CHARACTER SET UTF8, OCTETS_VALUE VARCHAR(8) CHARACTER SET OCTETS DEFAULT x'00ff80', DERIVED COMPUTED BY (ID+1), CONSTRAINT E_CPK PRIMARY KEY(ID), CONSTRAINT E_FK FOREIGN KEY(TENANT,PARENT_ID) REFERENCES E_PARENT(TENANT,ID) ON UPDATE CASCADE ON DELETE SET NULL USING DESCENDING INDEX E_FK_IDX, CONSTRAINT E_CHECK CHECK (TENANT>=0))",
             "CREATE TABLE E_AUTO (ID BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY, V INTEGER NOT NULL)",
+            "CREATE TABLE E_WIDE(ID VARCHAR(700) CHARACTER SET UTF8 COLLATE UTF8, PRIMARY KEY(ID))",
             "CREATE DESCENDING INDEX E_DESC ON E_CHILD(TENANT,PARENT_ID)",
             "ALTER INDEX E_DESC INACTIVE",
             "CREATE INDEX E_EXPR ON E_PARENT COMPUTED BY (UPPER(LABEL))",
@@ -1486,6 +1562,45 @@ mod tests {
                 .unwrap_or_else(|e| panic!("Fixture {sql}: {e}"));
         }
         if has_column(&mut client, "RDB$ROLES", "RDB$SYSTEM_PRIVILEGES").unwrap() {
+            client
+                .execute(
+                    "ALTER DATABASE INCLUDE ALL TO PUBLICATION",
+                    vec![],
+                    0,
+                    None,
+                    None,
+                )
+                .unwrap();
+            client
+                .execute(
+                    "ALTER DATABASE EXCLUDE TABLE E_CHILD FROM PUBLICATION",
+                    vec![],
+                    0,
+                    None,
+                    None,
+                )
+                .unwrap();
+            client
+                .execute("ALTER DATABASE ENABLE PUBLICATION", vec![], 0, None, None)
+                .unwrap();
+            client
+                .execute(
+                    "ALTER DATABASE SET DEFAULT SQL SECURITY DEFINER",
+                    vec![],
+                    0,
+                    None,
+                    None,
+                )
+                .unwrap();
+            client
+                .execute(
+                    "ALTER TABLE E_GTT_PRESERVE ALTER SQL SECURITY INVOKER",
+                    vec![],
+                    0,
+                    None,
+                    None,
+                )
+                .unwrap();
             client.execute("ALTER ROLE E_READER SET SYSTEM PRIVILEGES TO MONITOR_ANY_ATTACHMENT, USE_GSTAT_UTILITY",vec![],0,None,None).unwrap();
             client
                 .execute(
@@ -1546,7 +1661,7 @@ mod tests {
         client.execute("CREATE TRIGGER E_DDL ACTIVE BEFORE ANY DDL STATEMENT POSITION 5 AS BEGIN EXCEPTION E_BAD; END",vec![],0,None,None).unwrap();
         drop(client);
         let dump = export(&json!({"params":original,"file_path":file})).unwrap();
-        assert_eq!(dump["tables"], 5);
+        assert_eq!(dump["tables"], 6);
         assert_eq!(dump["rows"], 3);
         let restored =
             restore(&json!({"params":target,"file_path":file,"create_database":true})).unwrap();
@@ -1562,6 +1677,7 @@ mod tests {
         .unwrap();
         for sql in [
             "SELECT * FROM E_PARENT ORDER BY TENANT,ID",
+            "SELECT MON$PAGE_SIZE FROM MON$DATABASE",
             "SELECT * FROM E_CHILD ORDER BY ID",
 
             "SELECT RDB$RELATION_TYPE FROM RDB$RELATIONS WHERE RDB$RELATION_NAME IN ('E_GTT_PRESERVE','E_GTT_DELETE') ORDER BY RDB$RELATION_NAME",
@@ -1586,6 +1702,10 @@ mod tests {
         ] {assert_eq!(source.query(sql,0,None).unwrap()["rows"],copy.query(sql,0,None).unwrap()["rows"],"{sql}");}
         if has_column(&mut source, "RDB$ROLES", "RDB$SYSTEM_PRIVILEGES").unwrap() {
             for sql in [
+                "SELECT RDB$SQL_SECURITY FROM RDB$DATABASE",
+                "SELECT RDB$ACTIVE_FLAG,RDB$AUTO_ENABLE FROM RDB$PUBLICATIONS",
+                "SELECT RDB$TABLE_NAME FROM RDB$PUBLICATION_TABLES ORDER BY RDB$TABLE_NAME",
+                "SELECT RDB$SQL_SECURITY FROM RDB$RELATIONS WHERE RDB$RELATION_NAME='E_GTT_PRESERVE'",
                 "SELECT RDB$SYSTEM_PRIVILEGES FROM RDB$ROLES WHERE RDB$ROLE_NAME='E_READER'",
                 "SELECT RDB$SQL_SECURITY FROM RDB$PACKAGES WHERE RDB$PACKAGE_NAME='E_PACKAGE'",
             ] {
@@ -1644,9 +1764,11 @@ mod tests {
             "{base}.full-trigger-only-{}.fdb",
             std::process::id()
         ));
-        let mut occupied =
-            Client::create_database(ConnectionParams::from_value(&trigger_target).unwrap())
-                .unwrap();
+        let mut occupied = Client::create_database(
+            ConnectionParams::from_value(&trigger_target).unwrap(),
+            Some(16384),
+        )
+        .unwrap();
         cleanup.databases.push(trigger_target.clone());
         occupied
             .execute(
@@ -1688,6 +1810,125 @@ mod tests {
             "Failed restore left its newly created database behind"
         );
         fs::remove_file(bad_file).unwrap();
+        let cancelled_file = file.with_file_name("full-database-cancelled.sql");
+        let header = read_header(&mut BufReader::new(File::open(&file).unwrap())).unwrap();
+        let mut cancelled_sql = BufWriter::new(File::create(&cancelled_file).unwrap());
+        writeln!(
+            cancelled_sql,
+            "{HEADER}{header}\nSET SQL DIALECT 3;\nSET TERM ^ ;"
+        )
+        .unwrap();
+        statement(
+            &mut cancelled_sql,
+            "CREATE TABLE OWNED_CANCELLED(ID INTEGER)",
+        )
+        .unwrap();
+        statement(&mut cancelled_sql,"/* TABULARIS_CANCEL_RESTORE */ WITH RECURSIVE n(x) AS (SELECT 1 FROM RDB$DATABASE UNION ALL SELECT x+1 FROM n WHERE x<1000) SELECT SUM(CAST(a.x AS BIGINT)*b.x*c.x) FROM n a CROSS JOIN n b CROSS JOIN n c").unwrap();
+        writeln!(cancelled_sql, "SET TERM ; ^").unwrap();
+        drop(cancelled_sql);
+        let mut cancelled = config.clone();
+        cancelled["database"] = json!(format!("{base}.full-cancelled-{}.fdb", std::process::id()));
+        cleanup.databases.push(cancelled.clone());
+        let control = std::sync::Arc::new(crate::control::Control::default());
+        let request = json!({"params":cancelled,"file_path":cancelled_file,"create_database":true});
+        let worker_control = control.clone();
+        let worker =
+            std::thread::spawn(move || crate::control::run(worker_control, || restore(&request)));
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut active = false;
+        while std::time::Instant::now() < until {
+            let mut probe = ConnectionParams::from_value(&cancelled).unwrap();
+            probe.connect_timeout_secs = 2;
+            probe.query_timeout_secs = Some(2);
+            if let Ok(mut probe) = Client::connect_without_database_triggers(probe) {
+                active = probe.query_objects("SELECT COUNT(*) AS N FROM MON$STATEMENTS WHERE MON$ATTACHMENT_ID<>CURRENT_CONNECTION AND MON$STATE=1 AND MON$SQL_TEXT CONTAINING 'TABULARIS_CANCEL_RESTORE'",vec![]).is_ok_and(|rows| rows[0]["N"]==1);
+            }
+            if active {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        control.cancel();
+        let failure = worker.join().unwrap().unwrap_err();
+        assert!(
+            active,
+            "Restore did not reach the cancellable SQL statement: {failure}"
+        );
+        assert_eq!(failure.code, -32800, "{failure}");
+        assert!(
+            !failure
+                .message
+                .contains("cleanup of the newly created target failed"),
+            "{failure}"
+        );
+        assert!(
+            Client::connect(ConnectionParams::from_value(&cancelled).unwrap()).is_err(),
+            "Cancelled restore left its newly created target behind"
+        );
+        fs::remove_file(cancelled_file).unwrap();
+        source
+            .execute(
+                "CREATE TABLE E_MANY(ID INTEGER PRIMARY KEY)",
+                vec![],
+                0,
+                None,
+                None,
+            )
+            .unwrap();
+        source.execute("INSERT INTO E_MANY WITH RECURSIVE n(x) AS (SELECT 0 FROM RDB$DATABASE UNION ALL SELECT x+1 FROM n WHERE x<999) SELECT a.x*1000+b.x FROM n a CROSS JOIN n b WHERE a.x*1000+b.x<=100000",vec![],0,None,None).unwrap();
+        let large = export(&json!({"params":original,"file_path":file})).unwrap();
+        assert!(large["rows"].as_u64().unwrap() > 100000);
+        let mut records = BufReader::new(File::open(&file).unwrap());
+        read_header(&mut records).unwrap();
+        let mut rows = 0;
+        while let Some(sql) = read_statement(&mut records).unwrap() {
+            rows += usize::from(sql.starts_with("INSERT INTO \"E_MANY\""));
+        }
+        assert_eq!(
+            rows, 100001,
+            "Export truncated the table at the normal buffered-result limit"
+        );
+        let previous = fs::read(&file).unwrap();
+        let control = std::sync::Arc::new(crate::control::Control::default());
+        let worker_control = control.clone();
+        let request = json!({"params":original,"file_path":file});
+        let worker =
+            std::thread::spawn(move || crate::control::run(worker_control, || export(&request)));
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let pending_prefix = format!(".tabularis-firebird-{}-", std::process::id());
+        let has_pending = || {
+            fs::read_dir(file.parent().unwrap()).unwrap().any(|entry| {
+                entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(&pending_prefix)
+            })
+        };
+        let mut writing = false;
+        while std::time::Instant::now() < until {
+            if has_pending() {
+                writing = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        control.cancel();
+        let failure = worker.join().unwrap().unwrap_err();
+        assert!(
+            writing,
+            "Export did not reach its private pending file: {failure}"
+        );
+        assert_eq!(failure.code, -32800, "{failure}");
+        assert_eq!(
+            fs::read(&file).unwrap(),
+            previous,
+            "Cancelled export replaced the prior backup"
+        );
+        assert!(
+            !has_pending(),
+            "Cancelled export left its private pending file behind"
+        );
         drop(source);
         drop(copy);
     }

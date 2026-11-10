@@ -227,12 +227,7 @@ pub fn get_routine_edit_script(id: Value, params: &Value) -> Value {
                     literal(module)
                 )));
             }
-            if !header["engine"].is_null() {
-                return Err(PluginError::invalid_params("External UDR declarations require engine-specific editing; no PSQL script was generated"));
-            }
-            let source = header["source"]
-                .as_str()
-                .ok_or_else(|| PluginError::invalid_params("Routine PSQL source is unavailable"))?;
+            let source = header["source"].as_str();
             let parameters = declarations(&mut client, &name, kind)?;
             let inputs = parameters
                 .iter()
@@ -275,10 +270,34 @@ pub fn get_routine_edit_script(id: Value, params: &Value) -> Value {
                 });
             }
             sql.push('\n');
-            sql.push_str(&body(source));
+            if let Some(engine) = header["engine"].as_str() {
+                let entrypoint = header["entrypoint"].as_str().ok_or_else(|| {
+                    PluginError::invalid_params("External routine entrypoint is unavailable")
+                })?;
+                sql.push_str(&external_clause(engine, entrypoint, source)?);
+            } else {
+                sql.push_str(&body(source.ok_or_else(|| {
+                    PluginError::invalid_params("Routine PSQL source is unavailable")
+                })?));
+            }
             Ok(json!(sql))
         })(),
     )
+}
+
+pub(super) fn external_clause(
+    engine: &str,
+    entrypoint: &str,
+    source: Option<&str>,
+) -> Result<String, PluginError> {
+    Ok(format!(
+        "EXTERNAL NAME {} ENGINE {}{}",
+        literal(entrypoint),
+        identifier(engine)?,
+        source
+            .map(|body| format!("\nAS {}", literal(body)))
+            .unwrap_or_default()
+    ))
 }
 
 pub fn drop_routine(id: Value, params: &Value) -> Value {

@@ -14,6 +14,16 @@ empty existing target. New database creation never overwrites an existing
 database, and a failed newly-created restore attempts bounded cleanup. Existing
 empty targets can retain partial work on SQL errors. Binary OCTETS columns now
 retain their raw bytes through both wire decoders and SQL rendering.
+Database/table/trigger SQL-security settings, original page sizes and replication
+publication settings are preserved. The restored wide-index fixture verifies
+the corrected little-endian creation DPB. Transfers reject SQL Dialect 1.
+External UDR trigger/routine declarations and edit scripts preserve quoted
+bindings and bodies; their modules must be installed on the server.
+
+Live regressions verify export past 100,000 rows, cancellation without replacing
+a prior dump, cleanup of cancelled new-database restores, and independent
+restoration through Firebird's own isql parser. Lost creation replies report an
+unknown outcome without retrying or deleting an unconfirmed target.
 
 [Host PR #1470](https://github.com/TabularisDB/tabularis/pull/1470) adds the shared
 desktop/web integration, explicit restore destination UI and a generic-dialect
