@@ -1,0 +1,27 @@
+name: Firebird soak
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  soak:
+    runs-on: windows-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['3', '4', '5']
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Two-hour workload, restart and rollback
+        shell: pwsh
+        run: ./tests/live-firebird.ps1 -Version '${{ matrix.version }}' -OperationalTests -OperationalDurationSeconds 7200
+      - name: Retain measurements
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: firebird-soak-${{ matrix.version }}
+          path: target/operations/*.json
+          if-no-files-found: warn
+          retention-days: 14
