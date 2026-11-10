@@ -10,6 +10,12 @@ profile=$(mktemp -d /tmp/tabularis-fb.XXXXXX)
 export LIMA_HOME="$profile/lima"
 vm=firebird
 cleanup() {
+  local status=$?
+  if [[ $status != 0 ]]; then
+    for log in "$LIMA_HOME/$vm/ha.stderr.log" "$LIMA_HOME/$vm/qemu.stderr.log" "$LIMA_HOME/$vm/serial.log"; do
+      if [[ -f $log ]]; then tail -n 35 "$log"; fi
+    done
+  fi
   if [[ -x "$profile/tools/bin/limactl" ]]; then
     "$profile/tools/bin/limactl" stop --force "$vm" >/dev/null 2>&1 || true
     "$profile/tools/bin/limactl" delete --force "$vm" >/dev/null 2>&1 || true
