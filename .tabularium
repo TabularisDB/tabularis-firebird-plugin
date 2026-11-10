@@ -1,6 +1,6 @@
 {
   "name": "firebird",
-  "version": "0.2.0-beta.6",
+  "version": "0.2.0-beta.7",
   "connection_metadata": true,
   "description": "Tabularis driver plugin for Firebird",
   "kind": "driver",

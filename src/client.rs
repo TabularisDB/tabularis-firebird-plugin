@@ -28,12 +28,37 @@ impl Client {
         let control = control::current();
         control.check()?;
         let _deadline = Deadline::connection(&control, params.connect_timeout_secs);
-        let result = Self::connect_inner(params, control.clone());
+        let result = Self::connect_inner(params, control.clone(), false, false);
         control.check()?;
         result
     }
 
-    fn connect_inner(params: ConnectionParams, control: Arc<Control>) -> Result<Self, PluginError> {
+    pub fn create_database(params: ConnectionParams) -> Result<Self, PluginError> {
+        let control = control::current();
+        control.check()?;
+        let _deadline = Deadline::connection(&control, params.connect_timeout_secs);
+        let result = Self::connect_inner(params, control.clone(), true, false);
+        control.check()?;
+        result
+    }
+
+    pub fn connect_without_database_triggers(
+        params: ConnectionParams,
+    ) -> Result<Self, PluginError> {
+        let control = control::current();
+        control.check()?;
+        let _deadline = Deadline::connection(&control, params.connect_timeout_secs);
+        let result = Self::connect_inner(params, control.clone(), false, true);
+        control.check()?;
+        result
+    }
+
+    fn connect_inner(
+        params: ConnectionParams,
+        control: Arc<Control>,
+        create: bool,
+        no_database_triggers: bool,
+    ) -> Result<Self, PluginError> {
         let database = params
             .database
             .as_deref()
@@ -92,9 +117,12 @@ impl Client {
         )
         .map_err(firebird_error)?;
         wire.set_blob_limit(crate::limits::current().blob_bytes);
-        let database = wire
-            .attach_database(&config, Dialect::D3, false)
-            .map_err(firebird_error)?;
+        let database = if create {
+            wire.create_database(&config, None, Dialect::D3)
+        } else {
+            wire.attach_database(&config, Dialect::D3, no_database_triggers)
+        }
+        .map_err(firebird_error)?;
         Ok(Self {
             wire,
             database,
@@ -469,6 +497,72 @@ impl Client {
                 )
             })
             .collect())
+    }
+
+    /// Streams one snapshot cursor without retaining an entire table or page.
+    pub fn stream(
+        &mut self,
+        sql: &str,
+        mut row: impl FnMut(Vec<Value>) -> Result<(), PluginError>,
+    ) -> Result<u64, PluginError> {
+        self.control.check()?;
+        let _deadline = Deadline::query(&self.control, self.query_timeout_secs);
+        let mut transaction = self
+            .batch_transaction
+            .take()
+            .ok_or_else(|| PluginError::internal("Export requires an open snapshot"))?;
+        let result = (|| {
+            let (kind, mut statement) = self
+                .wire
+                .prepare_statement(&mut self.database, &mut transaction, Dialect::D3, sql)
+                .map_err(firebird_error)?;
+            let result = (|| {
+                if kind != StmtType::Select {
+                    return Err(PluginError::invalid_params(
+                        "Export cursor must be a SELECT",
+                    ));
+                }
+                self.wire
+                    .execute(&mut self.database, &mut transaction, &mut statement, vec![])
+                    .map_err(firebird_error)?;
+                let mut count = 0;
+                while let Some(columns) = self
+                    .wire
+                    .fetch(&mut self.database, &mut transaction, &mut statement)
+                    .map_err(firebird_error)?
+                {
+                    self.control.check()?;
+                    row(columns
+                        .into_iter()
+                        .map(|column| sql_value(column.value))
+                        .collect::<Result<_, _>>()?)?;
+                    count += 1;
+                }
+                Ok(count)
+            })();
+            let closed = self
+                .wire
+                .free_statement(&mut statement, FreeStmtOp::Drop)
+                .map_err(firebird_error);
+            result.and_then(|count| closed.map(|_| count))
+        })();
+        self.batch_transaction = Some(transaction);
+        self.control.check()?;
+        result
+    }
+
+    /// Used only for a database this operation has just created.
+    pub fn drop_created_database(mut self) -> Result<(), PluginError> {
+        self.control.check()?;
+        let _deadline = Deadline::query(&self.control, 5);
+        if let Some(mut transaction) = self.batch_transaction.take() {
+            self.wire
+                .transaction_operation(&mut transaction, TrOp::Rollback)
+                .map_err(firebird_error)?;
+        }
+        self.wire
+            .drop_database(&mut self.database)
+            .map_err(firebird_error)
     }
 }
 

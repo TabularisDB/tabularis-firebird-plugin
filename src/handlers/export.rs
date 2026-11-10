@@ -52,7 +52,7 @@ fn byte_expression(bytes: &[u8], binary: bool) -> String {
     pieces.join(" || ")
 }
 
-fn literal(value: &Value, binary: bool) -> Result<String, PluginError> {
+pub(super) fn literal(value: &Value, binary: bool) -> Result<String, PluginError> {
     if binary && !value.is_null() && !value.is_string() {
         return Err(PluginError::invalid_params(
             "Binary export values require complete BLOB strings",
@@ -103,7 +103,7 @@ fn perform(params: &Value) -> Result<Value, PluginError> {
         ));
     }
     let mut client = connect(params)?;
-    let metadata = client.query_objects("SELECT TRIM(r.RDB$FIELD_NAME) AS \"name\", f.RDB$FIELD_TYPE AS \"kind\", f.RDB$FIELD_SUB_TYPE AS \"subtype\", f.RDB$DIMENSIONS AS \"dimensions\", (f.RDB$COMPUTED_SOURCE IS NOT NULL) AS \"computed\", r.RDB$IDENTITY_TYPE AS \"identity\" FROM RDB$RELATION_FIELDS r JOIN RDB$FIELDS f ON f.RDB$FIELD_NAME=r.RDB$FIELD_SOURCE WHERE r.RDB$RELATION_NAME=?", vec![SqlType::Text(table.into())])?;
+    let metadata = client.query_objects("SELECT TRIM(r.RDB$FIELD_NAME) AS \"name\", f.RDB$FIELD_TYPE AS \"kind\", f.RDB$FIELD_SUB_TYPE AS \"subtype\", f.RDB$CHARACTER_SET_ID AS \"charset_id\", f.RDB$DIMENSIONS AS \"dimensions\", (f.RDB$COMPUTED_SOURCE IS NOT NULL) AS \"computed\", r.RDB$IDENTITY_TYPE AS \"identity\" FROM RDB$RELATION_FIELDS r JOIN RDB$FIELDS f ON f.RDB$FIELD_NAME=r.RDB$FIELD_SOURCE WHERE r.RDB$RELATION_NAME=?", vec![SqlType::Text(table.into())])?;
     let mut selected = Vec::new();
     let mut override_identity = false;
     for (index, name) in names.iter().enumerate() {
@@ -125,7 +125,8 @@ fn perform(params: &Value) -> Result<Value, PluginError> {
         selected.push((
             index,
             identifier(name)?,
-            field["kind"] == 261 && field["subtype"] != 1,
+            (field["kind"] == 261 && field["subtype"] != 1)
+                || (matches!(field["kind"].as_i64(), Some(14 | 37)) && field["charset_id"] == 1),
         ));
     }
     let mut statements = Vec::new();

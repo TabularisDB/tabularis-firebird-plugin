@@ -164,7 +164,12 @@ pub fn xsqlda_to_blr(xsqlda: &[XSqlVar]) -> Result<Bytes, FbError> {
 
         match sqltype as u32 {
             ibase::SQL_VARYING => {
-                blr.put_u8(consts::blr::VARYING);
+                if var.sqlsubtype == 1 {
+                    blr.put_u8(consts::blr::VARYING2);
+                    blr.put_u16_le(1); // OCTETS must not pass through the attachment's text charset.
+                } else {
+                    blr.put_u8(consts::blr::VARYING);
+                }
                 blr.put_i16_le(var.data_length);
             }
 

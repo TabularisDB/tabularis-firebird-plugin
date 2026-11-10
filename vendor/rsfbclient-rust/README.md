@@ -21,6 +21,12 @@ Local functional changes:
 
 Replace this copy with an upstream release when it exposes statement metadata, exact decimal values and faithful temporal values. No Firebird server/client binaries are included here.
 
+Database creation adds `isc_dpb_set_db_charset` with the correct DPB v1/v2 length,
+so the requested database default is retained. SQL TEXT/VARYING with charset
+OCTETS uses an explicit binary BLR descriptor and returns raw bytes in both row
+decoders; it never passes through UTF-8 decoding. Workspace tests cover both
+DPB encodings and both decoded binary sinks, alongside live SQL roundtrips.
+
 ## Updating this copy
 
 Treat an update as a protocol change, even if the upstream Rust API still compiles. Preserve the MIT license and upstream provenance above. Start from the published crate recorded here, compare it with this directory, and review the candidate upstream changes separately; do not replace this directory wholesale or assume a version bump includes our patches.

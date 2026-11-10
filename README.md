@@ -1,6 +1,6 @@
 # Firebird — Tabularis Plugin
 
-Firebird network driver for [Tabularis](https://github.com/TabularisDB/tabularis), built with a locally patched `rsfbclient-rust` wire driver. No Firebird client DLL is required. The stable v0.1.0 is read-only. The **0.2.0-beta.6 prerelease includes writes, interactive transactions, atomic batches, DDL, prepare-only query plans, roles and character sets**; see [DEVELOPMENT.md](DEVELOPMENT.md) for completed work and remaining limitations.
+Firebird network driver for [Tabularis](https://github.com/TabularisDB/tabularis), built with a locally patched `rsfbclient-rust` wire driver. No Firebird client DLL is required. The stable v0.1.0 is read-only. The **0.2.0-beta.7 prerelease includes writes, interactive transactions, atomic batches, DDL, prepare-only query plans, roles and character sets**; see [DEVELOPMENT.md](DEVELOPMENT.md) for completed work and remaining limitations.
 
 Development and future releases are maintained in [TabularisDB/tabularis-firebird-plugin](https://github.com/TabularisDB/tabularis-firebird-plugin).
 
@@ -70,6 +70,37 @@ Routine-management RPCs are implemented, but their UI capability remains disable
 The runtime contract follows Tabularis's actual driver implementation: view details use `view_name`, routine details use `routine_name`, foreign keys use `name`/`ref_table`/`ref_column`/`seq_in_fk`, and indexes return one row per segment with `name`/`column_name`/`seq_in_index`. The older `view` and `routine` request names remain accepted. Some plugin-guide examples show older shapes; live tests deserialize responses against the required host fields in `src/host_contract_tests.rs`.
 
 Batch metadata requests require a `tables` array of non-empty names without trailing spaces. Duplicate names are queried once, unknown names map to empty arrays, and an empty list returns `{}`. Names are bound parameters. Queries run in groups of up to 500 table names to stay below Firebird 3's IN-list limit. A schema snapshot uses table discovery and these same bulk queries, rather than connecting or querying separately for every table. Each catalog query uses its own read-only transaction; the snapshot is not atomic across concurrent schema changes.
+
+Full logical database SQL export and restore are available through the optional
+`get_database_sql_capabilities`, `export_database_sql` and `import_database_sql`
+RPCs. The companion [Host PR #1469](https://github.com/TabularisDB/tabularis/pull/1469)
+connects them to database dump/import and provides native trigger SQL editing for
+generic dialects. Older hosts retain their previous transfer path.
+
+The exporter reads one read-only snapshot and streams rows to an atomic, private
+pending file. It includes domains, defaults/checks, collations, character-set
+defaults, ordinary/GTT tables, views in dependency order, computed/identity
+columns, sequences and counters, PSQL routines/packages, legacy UDF and BLOB-filter
+declarations, indexes and composite constraints, triggers, comments, role system
+privileges, grants and local authentication mappings. External library declarations
+require the corresponding modules/plugins on the target server.
+
+Restore validates a private snapshot of the entire file before connecting to the
+target. Choose a new server-side path/alias to create a database, or an existing
+empty database. It requires the source engine major version and object owner;
+the attachment encoding may differ from the database default. Creation never
+overwrites an existing database. A failed newly-created restore attempts bounded
+cleanup and reports any cleanup failure; an existing empty target can remain
+partly populated after a SQL error. Generator counters are nontransactional and
+are sampled at the end of export. This is a logical SQL transfer, not a physical
+backup of server configuration, authentication accounts or encryption keys.
+
+Arrays, nonstandard BLOB subtypes, external-table target paths, mixed object owners,
+unknown catalog encodings and missing expression source are rejected explicitly.
+An unsupported export never replaces an existing backup. Individual SQL records
+are limited to 8 MiB, including encoded data; use an engine backup for databases
+outside these limits. Whole-schema export requires all user tables; data-only
+requests retain the existing table renderer.
 
 Result representation and remaining limitations:
 

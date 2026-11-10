@@ -25,7 +25,7 @@ pub fn routine_create_template(id: Value, params: &Value) -> Value {
     )
 }
 
-fn header(client: &mut Client, name: &Name, kind: &str) -> Result<Value, PluginError> {
+pub(super) fn header(client: &mut Client, name: &Name, kind: &str) -> Result<Value, PluginError> {
     let (table, field, source, extra) = if kind == "FUNCTION" {
         (
             "RDB$FUNCTIONS",
@@ -50,7 +50,11 @@ fn header(client: &mut Client, name: &Name, kind: &str) -> Result<Value, PluginE
     client.query_objects(&format!(r#"SELECT r.{source} AS "source", r.RDB$DESCRIPTION AS "comment", TRIM(r.RDB$ENGINE_NAME) AS "engine", r.RDB$ENTRYPOINT AS "entrypoint", {security} AS "security", {extra} FROM {table} r WHERE r.{field}=? AND r.RDB$PACKAGE_NAME IS NULL AND COALESCE(r.RDB$SYSTEM_FLAG,0)=0"#),vec![SqlType::Text(name.name.clone())])?.into_iter().next().ok_or_else(||PluginError::invalid_params("Routine no longer exists"))
 }
 
-fn declarations(client: &mut Client, name: &Name, kind: &str) -> Result<Vec<Value>, PluginError> {
+pub(super) fn declarations(
+    client: &mut Client,
+    name: &Name,
+    kind: &str,
+) -> Result<Vec<Value>, PluginError> {
     let (table, field, parameter, mechanism, mode, order) = if kind == "PROCEDURE" {
         (
             "RDB$PROCEDURE_PARAMETERS",
@@ -82,7 +86,7 @@ fn declarations(client: &mut Client, name: &Name, kind: &str) -> Result<Vec<Valu
         WHERE p.{field}=? AND p.RDB$PACKAGE_NAME IS NULL ORDER BY {order}"#),vec![SqlType::Text(name.name.clone())])
 }
 
-fn declaration(row: &Value, named: bool) -> Result<String, PluginError> {
+pub(super) fn declaration(row: &Value, named: bool) -> Result<String, PluginError> {
     if !row["dimensions"].is_null() {
         return Err(PluginError::invalid_params(
             "Array parameter declarations cannot be regenerated",

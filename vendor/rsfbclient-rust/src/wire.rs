@@ -189,6 +189,7 @@ pub fn create(
     auth_plugin: Option<&AuthPlugin>,
     srp_key: &[u8; 32],
 ) -> Result<Bytes, FbError> {
+    let default_charset = charset.on_firebird.as_bytes();
     let dpb = build_dpb(
         user,
         pass,
@@ -202,6 +203,15 @@ pub fn create(
         srp_key,
     )?;
 
+    // A new database must retain the requested default, not silently use NONE.
+    let mut dpb = dpb.to_vec();
+    dpb.push(ibase::isc_dpb_set_db_charset as u8);
+    if dpb[0] == ibase::isc_dpb_version2 as u8 {
+        dpb.extend_from_slice(&(default_charset.len() as u32).to_le_bytes());
+    } else {
+        dpb.push(default_charset.len() as u8);
+    }
+    dpb.extend_from_slice(&default_charset);
     let mut create = BytesMut::with_capacity(16 + db_name.len() + dpb.len());
 
     create.put_u32(WireOp::Create as u32);
@@ -907,8 +917,12 @@ impl RowSink for ParsedColumnSink<'_> {
     }
 
     fn text(&mut self, var: &XSqlVar, sqltype: u32, data: Bytes) -> Result<(), FbError> {
-        let text = self.charset.decode(&data[..])?;
-        self.push(var, sqltype, SqlType::Text(text));
+        let value = if var.sqlsubtype == 1 {
+            SqlType::Binary(data.to_vec())
+        } else {
+            SqlType::Text(self.charset.decode(&data[..])?)
+        };
+        self.push(var, sqltype, value);
         Ok(())
     }
 
@@ -977,8 +991,12 @@ impl RowSink for ColumnSink<'_> {
     }
 
     fn text(&mut self, var: &XSqlVar, sqltype: u32, data: Bytes) -> Result<(), FbError> {
-        let text = self.charset.decode(&data[..])?;
-        self.push(var, sqltype, SqlType::Text(text));
+        let value = if var.sqlsubtype == 1 {
+            SqlType::Binary(data.to_vec())
+        } else {
+            SqlType::Text(self.charset.decode(&data[..])?)
+        };
+        self.push(var, sqltype, value);
         Ok(())
     }
 
@@ -1577,6 +1595,69 @@ pub fn parse_explain_plan(data: &mut Bytes, charset: &Charset) -> Result<String,
 mod tests {
     use super::*;
     use rsfbclient_core::charset::UTF_8;
+
+    #[test]
+    fn database_creation_keeps_the_default_charset_in_both_dpb_encodings() {
+        for user in ["SYSDBA".to_string(), "x".repeat(300)] {
+            let mut request = create(
+                "owned.fdb",
+                &user,
+                "test",
+                ProtocolVersion::V13,
+                UTF_8,
+                None,
+                None,
+                Dialect::D3,
+                None,
+                &[0; 32],
+            )
+            .unwrap();
+            assert_eq!(request.get_u32().unwrap(), WireOp::Create as u32);
+            assert_eq!(request.get_u32().unwrap(), 0);
+            assert_eq!(request.get_wire_bytes().unwrap().as_ref(), b"owned.fdb");
+            let dpb = request.get_wire_bytes().unwrap();
+            let mut expected = vec![ibase::isc_dpb_set_db_charset as u8];
+            if dpb[0] == ibase::isc_dpb_version2 as u8 {
+                expected.extend_from_slice(&4u32.to_le_bytes());
+            } else {
+                expected.push(4);
+            }
+            expected.extend_from_slice(b"UTF8");
+            assert!(dpb.ends_with(&expected));
+        }
+    }
+
+    #[test]
+    fn octets_columns_preserve_invalid_utf8_in_both_decoded_sinks() {
+        let var = XSqlVar {
+            sqltype: ibase::SQL_VARYING as i16 + 1,
+            sqlsubtype: 1,
+            data_length: 8,
+            ..Default::default()
+        };
+        let mut parsed_values = Vec::new();
+        let mut parsed = ParsedColumnSink {
+            charset: &UTF_8,
+            out: &mut parsed_values,
+        };
+        parsed
+            .text(&var, ibase::SQL_VARYING, Bytes::from_static(&[0, 255, 128]))
+            .unwrap();
+        match &parsed.out[0] {
+            ParsedColumn::Complete(column) => {
+                assert!(matches!(&column.value,SqlType::Binary(bytes) if bytes==&[0,255,128]))
+            }
+            _ => panic!("expected complete binary column"),
+        }
+        let mut columns = Vec::new();
+        let mut sink = ColumnSink {
+            charset: &UTF_8,
+            out: &mut columns,
+        };
+        sink.text(&var, ibase::SQL_VARYING, Bytes::from_static(&[0, 255, 128]))
+            .unwrap();
+        assert!(matches!(&columns[0].value,SqlType::Binary(bytes) if bytes==&[0,255,128]));
+    }
 
     #[test]
     fn blob_parameter_buffers_are_length_delimited_before_the_handles() {

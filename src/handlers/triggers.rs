@@ -12,7 +12,7 @@ const SQL: &str = r#"SELECT TRIM(RDB$TRIGGER_NAME) AS "name", COALESCE(TRIM(RDB$
     (COALESCE(RDB$TRIGGER_INACTIVE,0)=0) AS "active"
     FROM RDB$TRIGGERS WHERE COALESCE(RDB$SYSTEM_FLAG,0)=0"#;
 
-fn event(code: i64) -> (String, String) {
+pub(super) fn event(code: i64) -> (String, String) {
     if (8192..=8196).contains(&code) {
         return (
             "ON".into(),
