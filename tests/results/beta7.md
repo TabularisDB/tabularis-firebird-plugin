@@ -86,6 +86,10 @@ The final Intel compatibility rerun corrected a CI-VM DNS failure and a test
 startup deadline that was too short for an emulated server. The export test
 still requires observing the private pending file, cancellation, preservation
 of the previous dump and removal of the pending file.
+The [corrected Intel run](https://github.com/TabularisDB/tabularis-firebird-plugin/actions/runs/42898070430)
+passed both Firebird 3 and 4 at `d909e40`; the [source matrix](https://github.com/TabularisDB/tabularis-firebird-plugin/actions/runs/42898074175)
+also passed all seventeen jobs. Changes after runtime `5cc412e` are restricted
+to CI networking, that test startup allowance and validation documentation.
 
 SQL transfer limits and required external modules are documented in README.
 Arrays, nonstandard BLOB subtypes, external table file mappings and mixed object
