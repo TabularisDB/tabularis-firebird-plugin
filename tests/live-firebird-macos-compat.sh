@@ -44,6 +44,8 @@ done
 export PATH="$profile/tools/bin:$PATH"
 # GitHub's macOS runners do not expose nested HVF; use explicit TCG on both hosts.
 export FIREBIRD_QEMU_REAL="$(command -v qemu-system-x86_64)"
+mkdir -p "$profile/share"
+ln -s "$(dirname "$FIREBIRD_QEMU_REAL")/../share/qemu" "$profile/share/qemu"
 cat > "$profile/bin/qemu-tcg" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
