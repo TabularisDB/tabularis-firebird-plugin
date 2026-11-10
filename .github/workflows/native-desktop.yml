@@ -10,11 +10,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-24.04, ubuntu-24.04-arm, macos-15-intel, macos-15]
+        runner: [ubuntu-24.04, ubuntu-24.04-arm, macos-15-intel, macos-15, windows-latest]
     env:
       CARGO_INCREMENTAL: '0'
       CARGO_PROFILE_DEV_DEBUG: '0'
-      TABULARIS_NATIVE_HOST_COMMIT: d639b8c316b2dd8a24f43c7953d0cc8453ee2035
+      TABULARIS_NATIVE_HOST_COMMIT: d13cc8fa8a9787588a684c66bdffbbe180398f2d
       WEBKIT_DISABLE_DMABUF_RENDERER: '1'
       GDK_BACKEND: x11
     steps:
@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           repository: lejyfps/tabularis
-          ref: d639b8c316b2dd8a24f43c7953d0cc8453ee2035
+          ref: d13cc8fa8a9787588a684c66bdffbbe180398f2d
           path: target/tabularis-native-host
           persist-credentials: false
       - uses: actions/setup-node@v5
@@ -46,6 +46,12 @@ jobs:
             ~/.cargo/git
             target/tabularis-native-host/src-tauri/target
           key: native-firebird-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('target/tabularis-native-host/src-tauri/Cargo.lock') }}
+      - name: Select the runner's Perl for vendored OpenSSL
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (!(Test-Path -LiteralPath 'C:/Strawberry/perl/bin/perl.exe')) { throw 'Strawberry Perl missing' }
+          'PERL=C:/Strawberry/perl/bin/perl.exe' >> $env:GITHUB_ENV
       - name: Build current Host frontend
         working-directory: target/tabularis-native-host
         run: pnpm install --frozen-lockfile && pnpm build:plugin-guest && pnpm --filter @tabularis/web-ui build
@@ -74,6 +80,16 @@ jobs:
         env:
           FIREBIRD_NATIVE_UI: '1'
           TABULARIS_NATIVE_HOST: ${{ github.workspace }}/target/tabularis-native-host/src-tauri/target/debug/tabularis
+      - name: Native Windows desktop, database transfer and trigger tests
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./tests/live-firebird.ps1 -Version 5 -AfterTests {
+            node tests/native/desktop.mjs
+            if ($LASTEXITCODE -ne 0) { throw 'Native desktop scenarios failed' }
+          }
+        env:
+          TABULARIS_NATIVE_HOST: ${{ github.workspace }}/target/tabularis-native-host/src-tauri/target/debug/tabularis.exe
       - name: Retain native evidence
         if: always()
         uses: actions/upload-artifact@v5

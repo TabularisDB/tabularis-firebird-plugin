@@ -94,10 +94,10 @@ try {
   }, id), 'native SQL editor');
   await evaluate(() => document.querySelector('button[aria-label="Dismiss"]')?.click());
   await wait(() => editor('CREATE TABLE NATIVE_UI_DATA(ID INTEGER PRIMARY KEY, TXT VARCHAR(100), BIN BLOB SUB_TYPE BINARY)'), 'editor buffer');
-  assert(await click('Run (Ctrl+Enter)'));
+  assert(await click('Run'));
   await wait(async () => (await query("SELECT COUNT(*) FROM RDB$RELATIONS WHERE RDB$RELATION_NAME='NATIVE_UI_DATA'")).rows[0][0] === 1, 'native editor CREATE');
   await editor("INSERT INTO NATIVE_UI_DATA VALUES(1,'native data',x'00ff807f')");
-  assert(await click('Run (Ctrl+Enter)'));
+  assert(await click('Run'));
   await wait(async () => (await query('SELECT COUNT(*) FROM NATIVE_UI_DATA')).rows[0][0] === 1, 'native editor INSERT');
   pass('native editor CREATE/INSERT through UI');
   assert(await click('Create New Trigger'));
