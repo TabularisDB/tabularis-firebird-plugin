@@ -102,6 +102,13 @@ are limited to 8 MiB, including encoded data; use an engine backup for databases
 outside these limits. Whole-schema export requires all user tables; data-only
 requests retain the existing table renderer.
 
+The full SQL file can also be restored into an independently created empty
+database with `isql -bail -nodbtriggers -ch UTF8 -input backup.sql <target>`.
+Use the same engine major version, owner and database default charset. The
+`-nodbtriggers` option suppresses database/DDL triggers during reconstruction,
+as the plugin restore does; see the [Firebird isql documentation](https://firebirdsql.org/file/documentation/html/en/firebirddocs/isql/firebird-isql.html).
+The Windows Firebird 3/4/5 fixtures verify this independent import path.
+
 Result representation and remaining limitations:
 
 - Column names come from prepared statement metadata, including for empty results and pages beyond the last row.

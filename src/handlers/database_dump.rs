@@ -1083,6 +1083,8 @@ fn export(params: &Value) -> Result<Value, PluginError> {
             )
         })?;
     }
+    // isql keeps INSERTs open across auto-committed DDL; release their table locks first.
+    statement(&mut writer, "COMMIT")?;
     for sql in &schema.after {
         statement(&mut writer, sql)?;
     }
@@ -1262,6 +1264,7 @@ fn restore(params: &Value) -> Result<Value, PluginError> {
             "RDB$COLLATIONS",
             "RDB$AUTH_MAPPING",
             "RDB$FILTERS",
+            "RDB$TRIGGERS",
         ] {
             if client.query_objects(
                 &format!("SELECT COUNT(*) AS N FROM {table} WHERE COALESCE(RDB$SYSTEM_FLAG,0)=0"),
@@ -1636,6 +1639,36 @@ mod tests {
             copy.query("SELECT COUNT(*) FROM E_CHILD", 0, None).unwrap()["rows"][0][0],
             3
         );
+        let mut trigger_target = config.clone();
+        trigger_target["database"] = json!(format!(
+            "{base}.full-trigger-only-{}.fdb",
+            std::process::id()
+        ));
+        let mut occupied =
+            Client::create_database(ConnectionParams::from_value(&trigger_target).unwrap())
+                .unwrap();
+        cleanup.databases.push(trigger_target.clone());
+        occupied
+            .execute(
+                "ALTER DATABASE SET DEFAULT CHARACTER SET WIN1252",
+                vec![],
+                0,
+                None,
+                None,
+            )
+            .unwrap();
+        occupied
+            .execute(
+                "CREATE TRIGGER OWNED_CONNECT INACTIVE ON CONNECT AS BEGIN END",
+                vec![],
+                0,
+                None,
+                None,
+            )
+            .unwrap();
+        drop(occupied);
+        let failure = restore(&json!({"params":trigger_target,"file_path":file})).unwrap_err();
+        assert!(failure.message.contains("empty database"), "{failure}");
         let bad_file = file.with_file_name("full-database-invalid.sql");
         let mut bad = BufWriter::new(File::create(&bad_file).unwrap());
         writeln!(bad,"{HEADER}{}\nSET SQL DIALECT 3;\nSET TERM ^ ;",json!({"engine_major":source.query("SELECT RDB$GET_CONTEXT('SYSTEM','ENGINE_VERSION') FROM RDB$DATABASE",0,None).unwrap()["rows"][0][0].as_str().unwrap().split('.').next().unwrap().parse::<u64>().unwrap(),"charset":"UTF8","owner":"SYSDBA"})).unwrap();

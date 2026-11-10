@@ -105,6 +105,7 @@ IpcName = tabularis_test_$Port
         throw 'Plugin stdio integration test failed'
     }
     Write-Host "Firebird $($package.Version) integration tests passed (server wire encryption: $ServerWireCrypt)."
+    & (Join-Path $PSScriptRoot 'isql-restore.ps1') -IsqlPath (Join-Path $serverDir 'isql.exe')
     # Optional host verification shares the fixture lifetime and still gets finally cleanup.
     if ($AfterTests) { & $AfterTests }
     if ($OperationalTests) {

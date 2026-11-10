@@ -39,6 +39,13 @@ E2E mock with owned paths; the disposable build denies OS secrets.
 
 Automatically named PK/NOT NULL constraints are preserved without name
 collisions, including subsequent automatic constraint creation on restored data.
+An existing database with only user triggers is rejected as an occupied target.
+The actual full SQL file also restores through Firebird's independent `isql`
+parser on Windows Firebird 3/4/5 with `-nodbtriggers`. This check found and fixed
+the missing COMMIT between row inserts and dependent DDL; it now runs in every
+Windows live fixture. Host transfer timeouts retain explicit user settings
+without inheriting the ordinary two-minute default. All five new UI messages
+are translated in all thirteen locales.
 Candidate CI/release evidence is appended after completion.
 The successful two-hour baseline soak run was 42813658201 at a606c9d; it is
 evidence for the prior runtime, not a Beta.7 measurement.
