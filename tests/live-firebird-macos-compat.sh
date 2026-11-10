@@ -68,6 +68,10 @@ arch: x86_64
 cpus: 2
 memory: 2GiB
 disk: 10GiB
+# Hosted macOS DNS gateways can be unreachable from Lima's forwarding agent.
+hostResolver:
+  enabled: false
+dns: [1.1.1.1, 8.8.8.8]
 images:
 - location: https://cloud-images.ubuntu.com/minimal/releases/noble/release-20261105/ubuntu-24.04-minimal-cloudimg-amd64.img
   arch: x86_64

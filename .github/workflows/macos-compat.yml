@@ -1,6 +1,12 @@
 name: macOS Firebird 3 and 4
 on:
   workflow_dispatch:
+    inputs:
+      runner:
+        description: Native macOS client architecture to verify
+        type: choice
+        default: all
+        options: [all, macos-15-intel, macos-15]
 permissions:
   contents: read
 jobs:
@@ -10,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [macos-15-intel, macos-15]
+        runner: ${{ fromJSON(inputs.runner == 'macos-15-intel' && '["macos-15-intel"]' || inputs.runner == 'macos-15' && '["macos-15"]' || '["macos-15-intel","macos-15"]') }}
         version: ['3', '4']
     steps:
       - uses: actions/checkout@v5
