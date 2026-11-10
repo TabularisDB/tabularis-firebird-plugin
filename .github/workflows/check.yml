@@ -25,6 +25,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Test native Linux client against Firebird ${{ matrix.version }}
         run: bash tests/live-firebird.sh '${{ matrix.version }}'
+  firebird-macos:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15-intel, macos-15]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test native macOS client against Firebird 5
+        run: bash tests/live-firebird-macos.sh
   packages:
     uses: ./.github/workflows/packages.yml
   check:
