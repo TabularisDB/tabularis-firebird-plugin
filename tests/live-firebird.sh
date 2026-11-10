@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Linux live tests with disposable official Firebird containers. No system installation.
+# Native Unix client tests with disposable official Firebird containers.
 set -euo pipefail
 umask 077
-[[ $(uname -s) == Linux ]] || { echo 'This fixture requires Linux' >&2; exit 2; }
+[[ $(uname -s) == Linux || $(uname -s) == Darwin ]] || { echo 'This fixture requires Linux or macOS with a test Docker endpoint' >&2; exit 2; }
 
 version=${1:-5}
 # Official firebirdsql/firebird bookworm manifests. ARM64 Firebird 5 pinned 2026-11-10.
@@ -83,7 +83,7 @@ cargo build --locked --bin firebird-plugin
 binary_type=$(file --brief target/debug/firebird-plugin)
 echo "Plugin binary: $binary_type"
 case "$architecture" in
-  aarch64|arm64) [[ "$binary_type" == *"ARM aarch64"* ]] ;;
-  x86_64) [[ "$binary_type" == *"x86-64"* ]] ;;
+  aarch64|arm64) [[ "$binary_type" == *"ARM aarch64"* || "$binary_type" == *"Mach-O 64-bit executable arm64"* ]] ;;
+  x86_64) [[ "$binary_type" == *"x86-64"* || "$binary_type" == *"Mach-O 64-bit executable x86_64"* ]] ;;
 esac
 python3 tests/restart-firebird.py --container "$container"

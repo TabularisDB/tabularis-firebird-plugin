@@ -1,0 +1,21 @@
+name: macOS Firebird 3 and 4
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compatibility:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15-intel, macos-15]
+        version: ['3', '4']
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install CI-only VM emulator
+        run: brew install qemu
+      - name: Test native client and server restart against the Linux guest
+        run: bash tests/live-firebird-macos-compat.sh '${{ matrix.version }}'
