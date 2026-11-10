@@ -1,0 +1,58 @@
+{
+  "source": "928658ef140bc3511f935f046acc44456c771b1f",
+  "workflow": "https://github.com/TabularisDB/tabularis-firebird-plugin/actions/runs/42837494423",
+  "scope": "Core query/restart/rollback workload; does not measure the new whole-database SQL transfer operations",
+  "reports": [
+    {
+      "recorded_utc": "2026-11-10T16:48:05.2578217Z",
+      "firebird_version": "3.0.14",
+      "os": "Microsoft Windows NT 10.0.26100.0",
+      "logical_processors": 4,
+      "server_restart_rollback_and_recovery": true,
+      "duration_seconds": 7200.074,
+      "requests": 56033,
+      "rows_per_request": 1000,
+      "payload_characters_per_row": 512,
+      "requests_per_second": 7.782,
+      "latency_p50_ms": 126.164,
+      "latency_p95_ms": 135.028,
+      "rss_first_bytes": 7970816,
+      "rss_last_bytes": 10981376,
+      "rss_peak_bytes": 10997760
+    },
+    {
+      "recorded_utc": "2026-11-10T16:48:10.8962560Z",
+      "firebird_version": "4.0.7",
+      "os": "Microsoft Windows NT 10.0.26100.0",
+      "logical_processors": 4,
+      "server_restart_rollback_and_recovery": true,
+      "duration_seconds": 7200.102,
+      "requests": 31262,
+      "rows_per_request": 1000,
+      "payload_characters_per_row": 512,
+      "requests_per_second": 4.342,
+      "latency_p50_ms": 223.895,
+      "latency_p95_ms": 257.434,
+      "rss_first_bytes": 8040448,
+      "rss_last_bytes": 10698752,
+      "rss_peak_bytes": 10702848
+    },
+    {
+      "recorded_utc": "2026-11-10T16:48:16.7866850Z",
+      "firebird_version": "5.0.4",
+      "os": "Microsoft Windows NT 10.0.26100.0",
+      "logical_processors": 4,
+      "server_restart_rollback_and_recovery": true,
+      "duration_seconds": 7200.136,
+      "requests": 32404,
+      "rows_per_request": 1000,
+      "payload_characters_per_row": 512,
+      "requests_per_second": 4.5,
+      "latency_p50_ms": 219.604,
+      "latency_p95_ms": 228.322,
+      "rss_first_bytes": 8269824,
+      "rss_last_bytes": 10588160,
+      "rss_peak_bytes": 10813440
+    }
+  ]
+}

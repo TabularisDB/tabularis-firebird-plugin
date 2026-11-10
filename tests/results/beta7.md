@@ -64,16 +64,28 @@ trigger and routine edit scripts support those declarations as well. Binding
 serialization is unit-tested; execution of application-specific external
 modules requires those modules on the target and is outside the fixture.
 
-The [native desktop workflow](https://github.com/TabularisDB/tabularis-firebird-plugin/actions/runs/42845883630)
-passed all five jobs at plugin source `9fb2807` with Host `d13cc8fa`: Windows
-x64, Linux x64/ARM64 and macOS Intel/Apple Silicon. The final additional metadata
-changes are covered by the subsequent source matrix and local live suites.
+The [native desktop workflow](https://github.com/TabularisDB/tabularis-firebird-plugin/actions/runs/42853003581)
+passed all five jobs at plugin source `5cc412e` with Host `d13cc8fa`: Windows
+x64, Linux x64/ARM64 and macOS Intel/Apple Silicon. The Intel job retried a
+GitHub HTTP-500 download failure before passing. All five downloaded evidence
+files contain the expected version, Host revision and six successful native groups.
+The [source matrix](https://github.com/TabularisDB/tabularis-firebird-plugin/actions/runs/42853006985)
+passed all seventeen jobs at that runtime revision.
 The [macOS Firebird 3/4 workflow](https://github.com/TabularisDB/tabularis-firebird-plugin/actions/runs/42845555002)
 passed all four jobs at `45a8f6e`. These use native clients with isolated x64
 servers in a disposable emulated Linux VM on CI; no VM is installed locally.
 
-The successful two-hour baseline soak run was 42813658201 at a606c9d; it is
-evidence for the prior runtime, not a Beta.7 measurement.
+The [two-hour soak](https://github.com/TabularisDB/tabularis-firebird-plugin/actions/runs/42837494423)
+passed on Firebird 3.0.14, 4.0.7 and 5.0.4. Each ran for more than 7,200 seconds,
+including restart/rollback/recovery, with 119,699 successful workload requests
+in total. [Raw measurements](beta7-soak.json) retain request counts, latency
+percentiles and first/last/peak plugin working sets. This is the core query
+workload at `928658e`; it does not measure the newer SQL-transfer operations.
+
+The final Intel compatibility rerun corrected a CI-VM DNS failure and a test
+startup deadline that was too short for an emulated server. The export test
+still requires observing the private pending file, cancellation, preservation
+of the previous dump and removal of the pending file.
 
 SQL transfer limits and required external modules are documented in README.
 Arrays, nonstandard BLOB subtypes, external table file mappings and mixed object
