@@ -2,18 +2,21 @@
 # Linux live tests with disposable official Firebird containers. No system installation.
 set -euo pipefail
 umask 077
+[[ $(uname -s) == Linux ]] || { echo 'This fixture requires Linux' >&2; exit 2; }
 
 version=${1:-5}
 # Official firebirdsql/firebird bookworm manifests. ARM64 Firebird 5 pinned 2026-11-10.
 # https://github.com/FirebirdSQL/firebird-docker
 architecture=$(uname -m)
+server_platform=linux/amd64
 case "$version:$architecture" in
-  3:x86_64) digest=1592da0e07e8303646de13bdcd7a80272c08a0c3dcf55bedeef632168508b5ac ;;
-  4:x86_64) digest=030e734f34a03f0a445764b9989c33885f2810a8ad63d2e420190c51dfd75dc2 ;;
+  3:x86_64|3:aarch64|3:arm64) digest=1592da0e07e8303646de13bdcd7a80272c08a0c3dcf55bedeef632168508b5ac ;;
+  4:x86_64|4:aarch64|4:arm64) digest=030e734f34a03f0a445764b9989c33885f2810a8ad63d2e420190c51dfd75dc2 ;;
   5:x86_64) digest=411db5ff019f8dd4308c8bbb2c85b7a49fc76290cdef81f848b6655bd72f599d ;;
-  5:aarch64|5:arm64) digest=14669e1a8b9c33e36d463bf52773e3ce7a7b5f7350bcb878a3db44f122f93d3b ;;
-  *) echo "Unsupported Firebird version/architecture: $version/$architecture (x64: 3/4/5; ARM64: 5)" >&2; exit 2 ;;
+  5:aarch64|5:arm64) digest=14669e1a8b9c33e36d463bf52773e3ce7a7b5f7350bcb878a3db44f122f93d3b; server_platform=linux/arm64 ;;
+  *) echo "Unsupported Firebird version/architecture: $version/$architecture" >&2; exit 2 ;;
 esac
+echo "Native plugin host: $architecture; Firebird $version server: $server_platform"
 image="firebirdsql/firebird@sha256:$digest"
 repo_root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$repo_root"
@@ -37,7 +40,7 @@ FIREBIRD_ROOT_PASSWORD=$(openssl rand -hex 16)
 export ISC_USER=SYSDBA ISC_PASSWORD="$FIREBIRD_ROOT_PASSWORD"
 # Keep the endpoint stable across a hard container stop/start.
 port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
-container=$(docker run --detach --publish "127.0.0.1:$port:3050" \
+container=$(docker run --detach --platform "$server_platform" --publish "127.0.0.1:$port:3050" \
   --env FIREBIRD_ROOT_PASSWORD \
   --env FIREBIRD_DATABASE=plugin-test.fdb \
   --env FIREBIRD_DATABASE_DEFAULT_CHARSET=UTF8 \
@@ -77,4 +80,10 @@ args=(--ignored --test-threads=1)
 if [[ "$version" == 3 ]]; then args+=(--skip _firebird4); fi
 cargo test --locked live_ -- "${args[@]}"
 cargo build --locked --bin firebird-plugin
+binary_type=$(file --brief target/debug/firebird-plugin)
+echo "Plugin binary: $binary_type"
+case "$architecture" in
+  aarch64|arm64) [[ "$binary_type" == *"ARM aarch64"* ]] ;;
+  x86_64) [[ "$binary_type" == *"x86-64"* ]] ;;
+esac
 python3 tests/restart-firebird.py --container "$container"
