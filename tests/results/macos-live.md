@@ -8,4 +8,4 @@ Coverage includes connection metadata, exact numeric/temporal types, roles and c
 
 The shell syntax and the early non-macOS guard were checked locally; the real database behavior was tested on the native CI runners. Reproduce on macOS with `bash tests/live-firebird-macos.sh` from the repository root. The script refuses unsupported operating systems/architectures before creating a fixture.
 
-Still unvalidated by these jobs: Firebird 3/4 on macOS, native desktop interaction/OS integration, full-server restart recovery on macOS, and multi-hour load/soak behavior. Published Beta.5 tags and assets are unchanged; the change adds test coverage.
+The initial jobs above did not include complete-server restart recovery; subsequent coverage is recorded in [server restart evidence](server-restart.md). Firebird 3/4 on macOS, native desktop interaction/OS integration and multi-hour load/soak behavior remain unvalidated. Published Beta.5 tags and assets are unchanged; these changes add test coverage.
