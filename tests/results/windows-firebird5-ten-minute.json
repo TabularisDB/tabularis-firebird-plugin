@@ -1,0 +1,17 @@
+{
+    "recorded_utc":  "2026-11-10T10:56:49.2355719Z",
+    "firebird_version":  "5.0.4",
+    "os":  "Microsoft Windows NT 10.0.26300.0",
+    "logical_processors":  16,
+    "server_restart_rollback_and_recovery":  true,
+    "duration_seconds":  600.038,
+    "requests":  5122,
+    "rows_per_request":  1000,
+    "payload_characters_per_row":  512,
+    "requests_per_second":  8.536,
+    "latency_p50_ms":  114.476,
+    "latency_p95_ms":  131.566,
+    "rss_first_bytes":  8146944,
+    "rss_last_bytes":  10821632,
+    "rss_peak_bytes":  10842112
+}
