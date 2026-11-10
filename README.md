@@ -109,6 +109,8 @@ The script downloads the official portable Firebird 3.0.14, 4.0.7 or 5.0.4 ZIP (
 
 Linux x64 CI runs the same live Rust suites with `bash tests/live-firebird.sh 3` (or `4`/`5`), using official Firebird Docker images pinned by digest. This requires Docker, Python 3, OpenSSL and Rust on the Linux runner. The script removes its container, anonymous data volume, temporary credentials and any image it newly pulled. The Windows development PC does not need Docker.
 
+Native Linux ARM64 CI runs the same live suites against Firebird 5 with a separately pinned ARM64 image, without emulation. The checked official Firebird 3/4 bookworm images publish only x64 manifests; those versions remain unvalidated on ARM64. Both image selections fail explicitly for unsupported version/architecture pairs.
+
 Windows CI also runs the operational checks on Firebird 3/4/5 and uploads JSON measurements from `target/operations/`. These report a bounded workload, not a universal memory or throughput guarantee. The plugin's working set is measured separately from the PowerShell harness. Server restart, database and credential cleanup remain inside the fixture's `finally` block.
 
 After registry publication, `node tests/verify-registry.mjs 0.2.0-beta.3` checks the registry's Ed25519 signature, release identity and all six signed download hashes without modifying an installed plugin. This does not replace native install/update/uninstall testing.

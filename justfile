@@ -52,11 +52,11 @@ dev-install: build
 
 [windows]
 dev-install: build
-    $dest = Join-Path $env:APPDATA "tabularis\plugins\drivers\firebird"
-    New-Item -ItemType Directory -Force -Path $dest | Out-Null
-    Copy-Item "target\debug\firebird-plugin.exe" $dest
-    Copy-Item ".tabularium" $dest
-    Write-Host "Installed to $dest"
+    $dest = Join-Path $env:APPDATA "tabularis\plugins\drivers\firebird"; \
+    New-Item -ItemType Directory -Force -Path $dest | Out-Null; \
+    Copy-Item "target\debug\firebird-plugin.exe" $dest; \
+    Copy-Item ".tabularium" $dest; \
+    Write-Host "Installed to $dest"; \
     Write-Host "Restart Tabularis (or toggle the plugin in Settings) to pick up changes."
 
 # Remove the kind-scoped development install. Manage old flat copies in Settings.
@@ -70,5 +70,5 @@ uninstall:
 
 [windows]
 uninstall:
-    $dest = Join-Path $env:APPDATA "tabularis\plugins\drivers\firebird"
+    $dest = Join-Path $env:APPDATA "tabularis\plugins\drivers\firebird"; \
     if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
