@@ -113,6 +113,14 @@ Windows CI also runs the operational checks on Firebird 3/4/5 and uploads JSON m
 
 After registry publication, `node tests/verify-registry.mjs 0.2.0-beta.3` checks the registry's Ed25519 signature, release identity and all six signed download hashes without modifying an installed plugin. This does not replace native install/update/uninstall testing.
 
+To exercise actual Windows host application code for registry installation, update and removal:
+
+```powershell
+./tests/host-registry-lifecycle.ps1 -HostPath target/tabularis-host
+```
+
+This requires a Tabularis source checkout, Rust and the host's native build prerequisites (including Perl for vendored OpenSSL on Windows). The script temporarily compiles `tests/host/registry_lifecycle.rs` as a host example, restores the host manifest afterwards and removes the example and isolated application directories in `finally`. It never uses your installed plugin directory. It uses the real registry and published Beta.3/Beta.4 packages, tests rejected updates while the old driver remains runnable, and exercises update, disable/enable and uninstall through host application APIs. Override `-OldVersion` to select another published predecessor; the target version comes from this repository's manifest. Build/output details are retained in ignored `target/host-registry-lifecycle.log`. This is a manual backend integration test, not a native GUI test or part of the default plugin CI.
+
 To verify a host checkout containing the companion PSQL patch, install that host's dependencies with its pinned pnpm version and run the following from this plugin repository (Node must be on PATH):
 
 ```powershell
