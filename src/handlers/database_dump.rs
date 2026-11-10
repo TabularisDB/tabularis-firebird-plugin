@@ -1894,7 +1894,8 @@ mod tests {
         let request = json!({"params":original,"file_path":file});
         let worker =
             std::thread::spawn(move || crate::control::run(worker_control, || export(&request)));
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        // Emulated CI servers can need more than ten seconds for catalog discovery.
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(120);
         let pending_prefix = format!(".tabularis-firebird-{}-", std::process::id());
         let has_pending = || {
             fs::read_dir(file.parent().unwrap()).unwrap().any(|entry| {
