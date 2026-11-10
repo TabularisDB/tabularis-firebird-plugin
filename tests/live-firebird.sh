@@ -86,4 +86,5 @@ case "$architecture" in
   aarch64|arm64) [[ "$binary_type" == *"ARM aarch64"* || "$binary_type" == *"Mach-O 64-bit executable arm64"* ]] ;;
   x86_64) [[ "$binary_type" == *"x86-64"* || "$binary_type" == *"Mach-O 64-bit executable x86_64"* ]] ;;
 esac
+if [[ ${FIREBIRD_NATIVE_UI:-0} == 1 ]]; then node tests/native/desktop.mjs; fi
 python3 tests/restart-firebird.py --container "$container"

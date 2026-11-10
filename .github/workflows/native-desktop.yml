@@ -1,0 +1,84 @@
+name: Native desktop Firebird integration
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  desktop:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm, macos-15-intel, macos-15]
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      TABULARIS_NATIVE_HOST_COMMIT: d639b8c316b2dd8a24f43c7953d0cc8453ee2035
+      WEBKIT_DISABLE_DMABUF_RENDERER: '1'
+      GDK_BACKEND: x11
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          repository: lejyfps/tabularis
+          ref: d639b8c316b2dd8a24f43c7953d0cc8453ee2035
+          path: target/tabularis-native-host
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '10.30.3'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux native WebView dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf xvfb dbus-x11
+      - name: Cache native Host build dependencies
+        id: native-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/tabularis-native-host/src-tauri/target
+          key: native-firebird-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('target/tabularis-native-host/src-tauri/Cargo.lock') }}
+      - name: Build current Host frontend
+        working-directory: target/tabularis-native-host
+        run: pnpm install --frozen-lockfile && pnpm build:plugin-guest && pnpm --filter @tabularis/web-ui build
+      - name: Isolate Host paths and deny OS secrets
+        run: node tests/native/prepare-host.mjs target/tabularis-native-host
+      - name: Build native desktop with existing E2E automation and file picker mock
+        run: cargo build --locked --manifest-path target/tabularis-native-host/src-tauri/Cargo.toml --features tauri/custom-protocol,e2e-testing --bin tabularis
+      - name: Retain successful build even when a later UI assertion fails
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/tabularis-native-host/src-tauri/target
+          key: native-firebird-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('target/tabularis-native-host/src-tauri/Cargo.lock') }}
+      - name: Native Linux desktop, database transfer and trigger tests
+        if: runner.os == 'Linux'
+        run: dbus-run-session -- xvfb-run -a bash tests/live-firebird.sh 5
+        env:
+          FIREBIRD_NATIVE_UI: '1'
+          TABULARIS_NATIVE_HOST: ${{ github.workspace }}/target/tabularis-native-host/src-tauri/target/debug/tabularis
+      - name: Native macOS desktop, database transfer and trigger tests
+        if: runner.os == 'macOS'
+        run: bash tests/live-firebird-macos.sh
+        env:
+          FIREBIRD_NATIVE_UI: '1'
+          TABULARIS_NATIVE_HOST: ${{ github.workspace }}/target/tabularis-native-host/src-tauri/target/debug/tabularis
+      - name: Retain native evidence
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: native-firebird-${{ runner.os }}-${{ runner.arch }}
+          path: target/native-evidence/*
+          if-no-files-found: warn
+          retention-days: 7
