@@ -1,10 +1,10 @@
 # Firebird — Tabularis Plugin
 
-Firebird network driver for [Tabularis](https://github.com/TabularisDB/tabularis), built with a locally patched `rsfbclient-rust` wire driver. No Firebird client DLL is required. The stable v0.1.0 is read-only. The **0.2.0-beta.4 prerelease includes writes, interactive transactions, atomic batches, DDL, prepare-only query plans, roles and character sets**; see [DEVELOPMENT.md](DEVELOPMENT.md) for completed work and remaining limitations.
+Firebird network driver for [Tabularis](https://github.com/TabularisDB/tabularis), built with a locally patched `rsfbclient-rust` wire driver. No Firebird client DLL is required. The stable v0.1.0 is read-only. The **0.2.0-beta.5 prerelease includes writes, interactive transactions, atomic batches, DDL, prepare-only query plans, roles and character sets**; see [DEVELOPMENT.md](DEVELOPMENT.md) for completed work and remaining limitations.
 
 Development and future releases are maintained in [TabularisDB/tabularis-firebird-plugin](https://github.com/TabularisDB/tabularis-firebird-plugin).
 
-Download the current [v0.2.0-beta.4 prerelease](https://github.com/TabularisDB/tabularis-firebird-plugin/releases/tag/v0.2.0-beta.4) for the new functionality. Its release notes describe compatibility changes and outstanding validation.
+Download the current [v0.2.0-beta.5 prerelease](https://github.com/TabularisDB/tabularis-firebird-plugin/releases/tag/v0.2.0-beta.5) for the new functionality. Its release notes describe compatibility changes and outstanding validation.
 
 The [Tabularis registry entry](https://registry.tabularis.dev/plugins/firebird) is managed separately from GitHub releases; end-to-end registry install/update/uninstall verification remains on the release checklist. The historical [release v0.1.0](https://github.com/lejyfps/tabularis-firebird-plugin/releases/tag/v0.1.0) remains available from the original repository.
 
@@ -190,7 +190,7 @@ Known limits and optional extensions:
 - Private package routines, arrays and nonstandard BLOB subtypes remain unsupported. Procedure/function name collisions require the returned identity discriminator. Full routine management and native trigger/editor UX still need validation.
 - Dedicated BLOB export/preview RPCs and runtime query analysis are not implemented. Prepare-only execution plans are available in the development branch.
 - Tabularis 0.32 displays a Create View action for the published read-only v0.1.0, which rejects view mutations. The writable development branch implements view mutations.
-- The published v0.1.0 remains read-only. The unreleased development branch enables writes and interactive transactions; native desktop tests of the new editing/DDL/session flows are still outstanding.
+- The published v0.1.0 remains read-only. The 0.2.0 betas enable writes and interactive transactions; native desktop tests of the new editing/DDL/session flows are still outstanding. Shared React/web UI coverage is recorded in [Windows UI evidence](tests/results/windows-web-ui.md).
 - The local wire-driver patches need maintenance until equivalent upstream APIs are available.
 
 ## References

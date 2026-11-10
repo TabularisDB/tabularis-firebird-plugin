@@ -41,7 +41,7 @@ Writable prerelease from [TabularisDB/tabularis-firebird-plugin](https://github.
 - Host query-timeout UI support depends on the registry schema; use the plugin timeout setting or explicit connection parameter. Older hosts that discard a cancelled response can temporarily show stale transaction state. The new state RPC requires a compatible host before it can refresh that indicator.
 - UTF8 is recommended. Firebird applies the chosen connection character set and rejects text it cannot represent; other legacy codecs have not each had a language-specific live roundtrip.
 
-See [DEVELOPMENT.md](https://github.com/TabularisDB/tabularis-firebird-plugin/blob/v0.2.0-beta.4/DEVELOPMENT.md) for the complete checklist and transaction semantics.
+See [DEVELOPMENT.md](https://github.com/TabularisDB/tabularis-firebird-plugin/blob/v0.2.0-beta.5/DEVELOPMENT.md) for the complete checklist and transaction semantics.
 
 ## Validation and packages
 
