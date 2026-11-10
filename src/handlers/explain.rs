@@ -1,4 +1,4 @@
-//! Prepare-only Firebird plans. Unknown costs and row estimates remain null.
+//! Firebird plans and bounded, read-only SELECT execution measurements.
 use crate::{
     client::Client,
     error::PluginError,
@@ -6,26 +6,55 @@ use crate::{
     rpc::{error_response, ok_response},
 };
 use serde_json::{json, Value};
+use std::time::Instant;
 
 pub fn explain_query(id: Value, params: &Value) -> Value {
     let result = (|| {
-        match params.get("analyze") {
-            None | Some(Value::Null) | Some(Value::Bool(false)) => {},
-            Some(Value::Bool(true)) => return Err(PluginError::invalid_params("Firebird runtime analysis is not supported; use analyze=false for a prepare-only plan")),
+        let analyze = match params.get("analyze") {
+            None | Some(Value::Null) | Some(Value::Bool(false)) => false,
+            Some(Value::Bool(true)) => true,
             _ => return Err(PluginError::invalid_params("analyze must be a boolean")),
-        }
+        };
         let query = params
             .get("query")
             .and_then(Value::as_str)
             .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| PluginError::invalid_params("query must be a non-empty string"))?;
+        if analyze
+            && !crate::utils::sql::top_level_words(query)
+                .first()
+                .is_some_and(|(_, word)| {
+                    word.eq_ignore_ascii_case("SELECT") || word.eq_ignore_ascii_case("WITH")
+                })
+        {
+            return Err(PluginError::invalid_params(
+                "Runtime analysis executes SELECT queries only",
+            ));
+        }
         let connection = ConnectionParams::from_value(inner_params(params))?;
         let sql = crate::utils::sql::firebird_query(&crate::utils::sql::unqualify_console_query(
             query,
             connection.database.as_deref().unwrap_or_default(),
         ))?;
-        let plan = Client::connect(connection)?.explain(&sql)?;
-        parsed_plan(query, &plan)
+        let mut client = Client::connect(connection)?;
+        let started = Instant::now();
+        let plan = client.explain(&sql)?;
+        let mut result = parsed_plan(query, &plan)?;
+        result["planning_time_ms"] = json!(started.elapsed().as_secs_f64() * 1000.0);
+        if analyze {
+            let started = Instant::now();
+            // Retain no rows; the cursor still scans the complete result under
+            // the normal cancellation, query deadline and decoded-BLOB limits.
+            let execution = client.query(&sql, 0, Some(0))?;
+            let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+            result["has_analyze_data"] = json!(true);
+            result["execution_time_ms"] = json!(elapsed);
+            result["root"]["actual_rows"] = execution["total_count"].clone();
+            result["root"]["actual_time_ms"] = json!(elapsed);
+            result["root"]["actual_loops"] = json!(1);
+            result["root"]["extra"] = json!({"measurement_source":"client wall clock including network and fetch", "scope":"whole SELECT; per-node engine counters unavailable"});
+        }
+        Ok(result)
     })();
     match result {
         Ok(result) => ok_response(id, result),
@@ -156,6 +185,27 @@ mod tests {
         );
         assert!(response.get("error").is_none(), "{response}");
         assert_eq!(response["result"]["driver"], "firebird");
+        let analyzed = explain_query(
+            json!(3),
+            &json!({"params":config,"query":"SELECT * FROM FB_CHILD","analyze":true}),
+        );
+        assert!(analyzed.get("error").is_none(), "{analyzed}");
+        assert_eq!(analyzed["result"]["has_analyze_data"], true);
+        assert_eq!(analyzed["result"]["root"]["actual_rows"], 2);
+        assert!(analyzed["result"]["execution_time_ms"].as_f64().unwrap() >= 0.0);
+        assert!(analyzed["result"]["root"]["children"][0]["actual_rows"].is_null());
+        assert!(explain_query(
+            json!(4),
+            &json!({"params":config,"query":"DELETE FROM FB_CHILD RETURNING ID","analyze":true})
+        )
+        .get("error")
+        .is_some());
+        assert_eq!(
+            client
+                .query("SELECT COUNT(*) FROM FB_CHILD", 0, None)
+                .unwrap()["rows"],
+            json!([[2]])
+        );
         assert_eq!(
             client
                 .execute(

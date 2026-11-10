@@ -22,6 +22,16 @@ pub fn sql_parameter(value: &Value) -> Result<SqlType, PluginError> {
     Ok(match value {
         Value::Null => SqlType::Null,
         Value::Bool(v) => SqlType::Boolean(*v),
+        Value::String(v) if v.starts_with("BLOB:") => {
+            SqlType::Binary(crate::utils::blob::decode(v)?)
+        }
+        Value::String(v)
+            if v.starts_with("BLOB_FILE_REF:") || v.starts_with("BLOB_UPLOAD_REF:") =>
+        {
+            return Err(PluginError::invalid_params(
+                "Unresolved BLOB file/upload reference",
+            ));
+        }
         Value::String(v) => SqlType::Text(v.clone()),
         Value::Number(v) if v.is_i64() => SqlType::Integer(v.as_i64().unwrap()),
         Value::Number(v) if v.is_u64() => SqlType::Text(v.to_string()),
@@ -64,7 +74,7 @@ fn object<'a>(params: &'a Value, key: &str) -> Result<&'a Map<String, Value>, Pl
         .ok_or_else(|| PluginError::invalid_params(format!("{key} must be an object")))
 }
 
-fn pk_values(params: &Value) -> Result<Map<String, Value>, PluginError> {
+pub(super) fn pk_values(params: &Value) -> Result<Map<String, Value>, PluginError> {
     let pk = if params.get("pk_map").is_some() {
         object(params, "pk_map")?.clone()
     } else {
@@ -86,6 +96,31 @@ fn pk_values(params: &Value) -> Result<Map<String, Value>, PluginError> {
         identifier(name)?;
     }
     Ok(pk)
+}
+
+pub(super) fn primary_filter(
+    client: &mut Client,
+    table: &str,
+    pk: &Map<String, Value>,
+) -> Result<(String, Vec<SqlType>), PluginError> {
+    let primary = client.query_objects("SELECT TRIM(s.RDB$FIELD_NAME) AS \"name\" FROM RDB$RELATION_CONSTRAINTS c JOIN RDB$INDEX_SEGMENTS s ON s.RDB$INDEX_NAME = c.RDB$INDEX_NAME WHERE c.RDB$RELATION_NAME = ? AND c.RDB$CONSTRAINT_TYPE = 'PRIMARY KEY' ORDER BY s.RDB$FIELD_POSITION", vec![SqlType::Text(table.into())])?;
+    if primary.is_empty()
+        || primary.len() != pk.len()
+        || primary
+            .iter()
+            .any(|c| !pk.contains_key(c["name"].as_str().unwrap()))
+    {
+        return Err(PluginError::invalid_params(
+            "pk_map must contain exactly the table's complete primary key",
+        ));
+    }
+    let mut predicates = vec![];
+    let mut values = vec![];
+    for (key, value) in pk {
+        predicates.push(format!("{} = ?", identifier(key)?));
+        values.push(sql_parameter(value)?);
+    }
+    Ok((predicates.join(" AND "), values))
 }
 
 fn perform(params: &Value, operation: &str) -> Result<Value, PluginError> {
@@ -132,23 +167,8 @@ fn perform(params: &Value, operation: &str) -> Result<Value, PluginError> {
             None
         };
         client = Client::connect(ConnectionParams::from_value(inner_params(params))?)?;
-        let primary = client.query_objects("SELECT TRIM(s.RDB$FIELD_NAME) AS \"name\" FROM RDB$RELATION_CONSTRAINTS c JOIN RDB$INDEX_SEGMENTS s ON s.RDB$INDEX_NAME = c.RDB$INDEX_NAME WHERE c.RDB$RELATION_NAME = ? AND c.RDB$CONSTRAINT_TYPE = 'PRIMARY KEY' ORDER BY s.RDB$FIELD_POSITION", vec![SqlType::Text(name.into())])?;
-        if primary.is_empty()
-            || primary.len() != pk.len()
-            || primary
-                .iter()
-                .any(|c| !pk.contains_key(c["name"].as_str().unwrap()))
-        {
-            return Err(PluginError::invalid_params(
-                "pk_map must contain exactly the table's complete primary key",
-            ));
-        }
-        let mut predicates = vec![];
-        for (key, value) in &pk {
-            predicates.push(format!("{} = ?", identifier(key)?));
-            values.push(sql_parameter(value)?);
-        }
-        let predicate = predicates.join(" AND ");
+        let (predicate, parameters) = primary_filter(&mut client, name, &pk)?;
+        values.extend(parameters);
         match assignment {
             Some(set) => format!("UPDATE {table} SET {set} WHERE {predicate}"),
             None => format!("DELETE FROM {table} WHERE {predicate}"),

@@ -32,6 +32,10 @@ pub fn handle_line(line: &str) -> Value {
         // Metadata.
         "get_databases" => handlers::metadata::get_databases(id, &params),
         "get_connection_metadata" => handlers::metadata::get_connection_metadata(id, &params),
+        "get_column_stats" => handlers::stats::get(id, &params),
+        "fetch_blob_as_data_url" => handlers::blob::fetch(id, &params),
+        "render_insert_statements" => handlers::export::render(id, &params),
+        "save_blob_to_file" => handlers::blob::save(id, &params),
         "get_schemas" => handlers::metadata::get_schemas(id, &params),
         "get_tables" => handlers::metadata::get_tables(id, &params),
         "get_columns" => handlers::metadata::get_columns(id, &params),

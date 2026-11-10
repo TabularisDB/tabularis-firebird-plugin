@@ -611,7 +611,7 @@ fn sql_value(value: SqlType) -> Result<Value, PluginError> {
             })?)
         }
         SqlType::Timestamp(t) => json!(t.to_string()),
-        SqlType::Binary(bytes) => json!(bytes),
+        SqlType::Binary(bytes) => json!(crate::utils::blob::encode(&bytes)),
     })
 }
 #[cfg(test)]
@@ -657,7 +657,7 @@ mod tests {
         assert_eq!(sql_value(SqlType::Null).unwrap(), Value::Null);
         assert_eq!(
             sql_value(SqlType::Binary(vec![0, 255])).unwrap(),
-            json!([0, 255])
+            json!("BLOB:2:application/octet-stream:AP8=")
         );
         assert_eq!(
             sql_value(SqlType::Integer(i64::MAX)).unwrap(),
@@ -743,7 +743,7 @@ mod integration_tests {
                 };
                 assert_eq!(
                     *row,
-                    json!([text, text, blob, blob, binary]),
+                    json!([text, text, blob, blob, crate::utils::blob::encode(&binary)]),
                     "charset {charset}"
                 );
             }

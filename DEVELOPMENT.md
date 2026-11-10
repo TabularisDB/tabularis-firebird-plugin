@@ -1,4 +1,6 @@
-# Driver completion (0.2.0-beta.5)
+# Driver completion (0.2.0-beta.6 candidate)
+
+Beta.6 adds complete host-format binary BLOBs, primary-key-guarded preview/export RPCs, lossless SQL data rendering for existing compatible tables, bounded SELECT runtime measurements and masked column statistics. Windows Firebird 3.0.14, 4.0.7 and 5.0.4 pass the extended live suite, including a SQL roundtrip with long binary/Unicode BLOBs, exact decimals, identity and computed columns. Full schema/database reconstruction and generator reseeding remain outside the SQL data renderer; exports exceeding 8 MiB per statement fail explicitly. Registry flags remain gated on schema deployment. See README for the exact Host requirements and limits.
 
 The published v0.1.0 tag and registry-signed assets remain unchanged in the original repository. Development and releases continue on `main` in [TabularisDB/tabularis-firebird-plugin](https://github.com/TabularisDB/tabularis-firebird-plugin). This checklist tracks current main and remaining work before stable release. The earlier v0.2.0-beta.1 release and its assets remain unchanged.
 

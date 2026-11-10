@@ -120,6 +120,21 @@ enum DataTypeCategory {
     Other,
 }
 
+#[derive(Deserialize)]
+struct ColumnStats {
+    row_count: u64,
+    null_count: u64,
+    distinct_count: Option<u64>,
+    min: Option<Value>,
+    max: Option<Value>,
+    top_values: Option<Vec<ColumnTopValue>>,
+}
+#[derive(Deserialize)]
+struct ColumnTopValue {
+    value: Value,
+    count: u64,
+}
+
 #[test]
 fn manifest_data_types_satisfy_connection_metadata_contract() {
     let manifest: Value = serde_json::from_str(include_str!("../.tabularium")).unwrap();
@@ -148,6 +163,7 @@ pub fn validate_response(method: &str, value: &Value) {
         "execute_query" => decode::<QueryResult>(value),
         "execute_query_batch" => decode::<Vec<BatchResult>>(value),
         "get_connection_metadata" => decode::<ConnectionMetadata>(value),
+        "get_column_stats" => decode::<ColumnStats>(value),
         "get_columns" | "get_view_columns" => decode::<Vec<Column>>(value),
         "get_foreign_keys" => decode::<Vec<ForeignKey>>(value),
         "get_indexes" => decode::<Vec<Index>>(value),

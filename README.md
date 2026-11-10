@@ -78,11 +78,19 @@ Result representation and remaining limitations:
 - NUMERIC/DECIMAL values are returned as exact decimal strings, including zero-scale decimals and 38-digit values. Conversion happens on the server before transmission; no floating-point conversion is involved. FLOAT/DOUBLE values remain JSON numbers.
 - DATE, TIME and TIMESTAMP are server-formatted strings preserving their original kind and fractional seconds. Firebird 3 formats TIMESTAMP dates as `29-FEB-2024`, while Firebird 4/5 use `2024-02-29`. WITH TIME ZONE values also retain their named zone or numeric offset; the plugin performs no conversion to the PC's time zone.
 - DECFLOAT(16/34) values are decimal strings, preserving all digits and exponents. Special values such as `NaN`, `Infinity` and `-Infinity` are strings too, so the response remains valid JSON.
-- Binary BLOBs are JSON byte arrays; text BLOBs are strings. Arrays and BLOB subtypes other than binary/text remain unsupported and return errors.
+- Binary BLOBs use the host's complete `BLOB:<byte-count>:<mime>:<base64>` wire format; text BLOBs remain strings. Legacy byte arrays are still accepted as bound binary parameters. Arrays and BLOB subtypes other than binary/text remain unsupported and return errors.
 
 The local driver source and its patches are documented in [vendor/rsfbclient-rust/README.md](vendor/rsfbclient-rust/README.md). It is MIT-licensed; releases include [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Metadata uses read-only transactions. User statements and batches use read-write transactions with explicit commit/rollback and resource cleanup. Unknown commit outcomes are reported explicitly and must not be blindly retried.
 
 ## Tests
+
+### Beta.6 BLOB, export and analysis scope
+
+- `fetch_blob_as_data_url` returns the complete host BLOB wire value for a binary/text BLOB selected by its **complete primary key**. NULL, missing rows, incomplete keys and ordinary scalar columns return errors. `save_blob_to_file` writes those bytes to a new file and refuses to overwrite an existing file. The host normally downloads through the fetch RPC.
+- `render_insert_statements` renders one Firebird INSERT per row, quotes column names, omits computed columns, preserves supplied identity values, NULLs, exact decimal strings, Unicode text (including NULs), and complete binary BLOBs. Text and binary literals are distinguished using connection metadata. Oversized rows fail explicitly above an 8 MiB SQL statement; use parameterized transfers for larger values. This is a **data transfer to an existing compatible table**, not a complete database backup. Table schema reconstruction, dependent domains/routines/triggers/grants and identity-generator reseeding are outside this RPC. Import executes actual writes; test the target schema and constraints first.
+- SQL export needs a Host that forwards bound connection parameters to the optional renderer. Full database data dumps additionally need the Host to call that renderer instead of generating generic multi-row VALUES. An older Host may fail the export; the plugin never guesses the source connection. The companion Host patch is required before advertising this workflow as supported in a released app.
+- `explain_query` remains prepare-only by default. `analyze:true` executes a SELECT/WITH query in a read-only transaction and reports total rows and client wall-clock time, including fetch/network time. No result rows are retained and query cancellation/deadlines apply. Per-node engine counters remain unavailable. Analysis actually executes expressions: Firebird generators and external routines can have effects beyond transactional table writes.
+- `get_column_stats` supports exact row/NULL counts, optional distinct/min/max/top values, a SQL filter and a bounded top list, within one read-only snapshot transaction. Disabled parts are never selected. BLOBs support counts only. The registry must accept `column_stats` before this can be enabled in the UI; the published manifest deliberately omits that flag until then.
 
 ```powershell
 cargo test --workspace --locked
@@ -194,7 +202,7 @@ Known limits and optional extensions:
 - Pagination still scans the full result for an exact count. Buffered results and BLOBs have configurable limits; host cancellation and connect/query deadlines are supported and tested on Firebird 3/4/5. Large-result performance needs further validation.
 - Network connections use SQL dialect 3, with UTF-8 by default and configurable character sets and roles in development builds. Embedded mode and TLS configuration remain unsupported. Modern Firebird wire encryption is implemented separately from TLS.
 - Private package routines, arrays and nonstandard BLOB subtypes remain unsupported. Procedure/function name collisions require the returned identity discriminator. Full routine management and native trigger/editor UX still need validation.
-- Dedicated BLOB export/preview RPCs and runtime query analysis are not implemented. Prepare-only execution plans are available in the development branch.
+- BLOB preview/export, SQL data rendering, runtime SELECT measurements and column statistics are implemented in Beta.6. See the scope and Host requirements below.
 - Tabularis 0.32 displays a Create View action for the published read-only v0.1.0, which rejects view mutations. The writable development branch implements view mutations.
 - The published v0.1.0 remains read-only. The 0.2.0 betas enable writes and interactive transactions; native desktop tests of the new editing/DDL/session flows are still outstanding. Shared React/web UI coverage is recorded in [Windows UI evidence](tests/results/windows-web-ui.md).
 - The local wire-driver patches need maintenance until equivalent upstream APIs are available.

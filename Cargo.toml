@@ -1,6 +1,6 @@
 [package]
 name = "firebird-plugin"
-version = "0.2.0-beta.5"
+version = "0.2.0-beta.6"
 edition = "2021"
 description = "Tabularis driver plugin for Firebird"
 repository = "https://github.com/TabularisDB/tabularis-firebird-plugin"
@@ -12,6 +12,8 @@ members = ["vendor/rsfbclient-rust"]
 default-members = ["."]
 
 [dependencies]
+base64 = "0.22.1"
+infer = "0.16"
 serde_json = "1"
 rsfbclient-core = "0.29"
 rsfbclient-rust = { path = "vendor/rsfbclient-rust" }
