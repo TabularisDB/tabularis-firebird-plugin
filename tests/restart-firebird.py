@@ -97,9 +97,22 @@ def main():
             if restarted and restarted.poll() is not None:
                 raise RuntimeError("Restarted server exited")
             try:
-                with socket.create_connection((config["host"], config["port"]), timeout=0.2):
-                    break
-            except OSError:
+                if args.container:
+                    # Docker's port proxy can accept before Firebird is ready.
+                    probe = subprocess.run(
+                        ["docker", "exec", "--interactive", "--env", "ISC_USER",
+                         "--env", "ISC_PASSWORD", args.container, "/opt/firebird/bin/isql",
+                         "-bail", "-quiet", "localhost:" + config["database"]],
+                        input="SELECT 1 FROM RDB$DATABASE;\n", text=True, timeout=3,
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    )
+                    if probe.returncode:
+                        raise OSError("Firebird is not ready")
+                else:
+                    with socket.create_connection((config["host"], config["port"]), timeout=0.2):
+                        pass
+                break
+            except (OSError, subprocess.TimeoutExpired):
                 if time.monotonic() >= deadline:
                     raise RuntimeError("Server did not restart on the original endpoint")
                 time.sleep(0.1)
