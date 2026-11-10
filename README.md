@@ -1,6 +1,6 @@
 # Firebird — Tabularis Plugin
 
-Firebird network driver for [Tabularis](https://github.com/TabularisDB/tabularis), built with a locally patched `rsfbclient-rust` wire driver. No Firebird client DLL is required. The stable v0.1.0 is read-only. The **0.2.0-beta.5 prerelease includes writes, interactive transactions, atomic batches, DDL, prepare-only query plans, roles and character sets**; see [DEVELOPMENT.md](DEVELOPMENT.md) for completed work and remaining limitations.
+Firebird network driver for [Tabularis](https://github.com/TabularisDB/tabularis), built with a locally patched `rsfbclient-rust` wire driver. No Firebird client DLL is required. The stable v0.1.0 is read-only. The **0.2.0-beta.6 prerelease includes writes, interactive transactions, atomic batches, DDL, prepare-only query plans, roles and character sets**; see [DEVELOPMENT.md](DEVELOPMENT.md) for completed work and remaining limitations.
 
 Development and future releases are maintained in [TabularisDB/tabularis-firebird-plugin](https://github.com/TabularisDB/tabularis-firebird-plugin).
 

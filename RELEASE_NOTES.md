@@ -1,50 +1,28 @@
-# Firebird driver 0.2.0-beta.5
+﻿# Firebird driver 0.2.0-beta.6
 
-Writable prerelease from [TabularisDB/tabularis-firebird-plugin](https://github.com/TabularisDB/tabularis-firebird-plugin). Earlier release assets and tags remain unchanged; the previously published v0.1.0 is the read-only stable release in the original repository.
+Writable prerelease from [TabularisDB/tabularis-firebird-plugin](https://github.com/TabularisDB/tabularis-firebird-plugin). The published v0.1.0 remains the read-only stable release. This release does not claim complete database backup/restore or Stable readiness.
 
-## Changes since 0.2.0-beta.4
+## Changes since Beta.5
 
-- Fix connection startup in hosts that validate connection-local data types. Firebird's `BOOLEAN` type now uses the supported `other` category; the SQL type and values remain Boolean. The previous `boolean` category made the host reject metadata after a successful connection test. Contract tests now reject unsupported categories in both the static manifest and live metadata responses.
-- Add an isolated Windows launcher for testing the actual React frontend, web transport and application APIs with disposable Firebird. Explicit runtime paths and a secrets provider that refuses OS credential access protect the normal profile. Native Tauri transport and Linux/macOS GUI validation remain separate checks.
+- Complete binary BLOBs now use the host wire format with byte count, detected MIME type and base64 data. Add primary-key-guarded preview and file-export RPCs; existing byte-array input parameters remain accepted. No truncation or implicit filesystem references.
+- Add Firebird single-row INSERT rendering for existing compatible tables, preserving binary/text BLOBs, Unicode and NULs, exact decimal strings, NULLs and supplied identity values while omitting computed columns. Rows over an 8 MiB SQL statement fail explicitly. This requires the companion [Host renderer/dump fix #1469](https://github.com/TabularisDB/tabularis/pull/1469).
+- Add SELECT runtime measurement through `explain_query` with `analyze:true`. The default remains prepare-only. Measurements cover total rows and client wall-clock time including fetch/network work; per-node engine counters remain unavailable. Analysis executes expressions, whose generators/external routines can have effects beyond transactional table writes.
+- Add exact, filtered and masked column statistics in a read-only snapshot transaction. BLOBs support counts only. The published manifest keeps `column_stats` disabled until the registry schema accepts it.
+- Explicitly declare the `generic` SQL dialect, preventing the Host from treating Firebird as PostgreSQL. Unsupported guided trigger editing is safely rejected; actual SQL trigger editing and native RPCs work.
+- Expand live CI to Linux x64/ARM64 clients with Firebird 3/4/5 and native macOS Intel/Apple Silicon with Firebird 5, including server crash/restart recovery. ARM64 clients use emulated x64 Firebird 3/4 servers; those two server builds are not native ARM64.
+- Record native Windows Tauri/WebView2 tests of SQL editing, grid updates, transactions/error rollback, PSQL/routine SQL editing, BLOB/statistics/analysis IPC, SQL data roundtrip and signed Beta.4-to-Beta.5 installation/update/uninstall. This uses a private unreleased Host build; gated manifest flags were enabled only in the disposable test profile. See [native evidence](https://github.com/TabularisDB/tabularis-firebird-plugin/blob/main/tests/results/windows-native.md).
+- Add manual two-hour Windows Firebird 3/4/5 soak jobs. A workflow definition or running job is not a completed measurement; retained results are reported separately.
 
-## Changes since 0.2.0-beta.3
+## Remaining limits
 
-- Fix Windows cancellation when a TCP write is blocked by a full send buffer. Cancellable sockets use nonblocking reads/writes and bounded WSAPoll readiness waits. Waiting does not add a query deadline or replay bytes after a genuine I/O failure. A regression first establishes stalled send progress, then requires cancellation within two seconds.
-- Add disposable Windows operational tests on Firebird 3/4/5: terminate the complete server with an open transaction, verify the plugin reports failure, restart the server, check rollback and resume work in the same plugin process. All three local versions passed.
-- Record a bounded 30-second workload per engine with 1,000 rows and 512-character payloads per request. CI retains JSON reports for request rate, p50/p95 latency and the plugin working set. Durations up to ten minutes can be requested locally. These measurements are not long-term performance guarantees.
-- Add a dependency-free registry verification script for the Ed25519 JWS, signed release identity and all six signed download hashes. Verification passed for the registry's approved Beta.3 entry; native registry install/update/uninstall testing remains outstanding.
-
-## Changes since 0.2.0-beta.1
-
-- Fix Windows receives that can remain blocked after socket shutdown. A shared attachment cancellation signal is checked between short receive waits, including during authentication and session reuse. Ordinary receive waits keep retrying until data or cancellation arrives, so an unlimited query does not acquire a new query deadline. Failed writes are not retried.
-- Add optional `get_session_state` with a required `session_id`. It returns the actual retained transaction state without opening a connection or executing SQL; unknown sessions report false. Compatible hosts can refresh their transaction indicator after a cancelled or failed call.
-- Explicitly extend generic SQL syntax instead of inheriting the host's PostgreSQL defaults. Firebird PSQL execution support is prepared in [host PR #1462](https://github.com/TabularisDB/tabularis/pull/1462); its syntax flag and routine menus remain disabled pending a compatible host release, registry schema and native UI validation.
-- Add bounded workload and failure-injection tests: large row/BLOB results, combined batch limits and rollback, concurrent writers and row-lock conflicts, loss of an already-committed COMMIT reply, server attachment termination, and stdio request-queue pressure. Unknown commit outcomes are never replayed.
-- Run live Firebird 3/4/5 suites on native Linux x64 CI using pinned official Docker images, alongside the Windows suites. Verify the real host editor splitter and plugin stdio together with procedures/local routines, functions, triggers, packages and EXECUTE BLOCK on Firebird 3/4/5.
-
-## Included from 0.2.0-beta.1
-
-- Execute parameterized INSERT/UPDATE/DELETE, RETURNING and atomic query batches. Grid mutations require the complete primary key and roll back if they match multiple rows. Unknown commit outcomes are reported without retrying.
-- Keep interactive transactions on the editor's session, including savepoints, isolation options and retaining operations. Errors, cancellation, deadlines, session release and process exit roll back pending changes.
-- Interrupt matching requests and honor connect/query timeouts. Bound retained rows, JSON result size and decoded BLOB size; oversized results fail without returning partial data.
-- Generate table, column, index, foreign-key and view DDL. Discover Firebird 4+ types, public package routines, legacy UDF parameters, triggers and sequence metadata. Add routine-call/template/edit/drop and trigger-management RPCs.
-- Return detailed prepare-only execution plans without executing the statement.
-- Negotiate ChaCha64/ChaCha encryption, retaining Arc4 compatibility for Firebird 3. Require wire encryption by default, with explicit policy overrides. Only Firebird 3+ with SRP authentication is supported.
-- Configure SQL roles and connection character sets globally or per connection. Preserve non-ASCII metadata names and mixed-charset text BLOBs, including long bound text; binary bytes remain unchanged. Unrepresentable characters fail explicitly.
-
-## Compatibility and limitations
-
-- This beta enables writes. Check transaction boundaries before running statements; explicit earlier commits cannot be undone by a later batch failure. Firebird generator increments are not transactional.
-- Servers with wire encryption disabled require an explicit `wire_crypt` setting of `enabled` or `disabled`. Arc4 can be disabled for modern-only connections. Firebird wire encryption is separate from TLS; embedded mode and TLS configuration are unsupported.
-- Released hosts can break Firebird PSQL bodies. Routine-management menus remain disabled; send complete statements through the RPC interface. The companion host patch is not included in these plugin archives. Native editor/DDL/transaction UX, long-term load/soak validation, server-restart validation outside Windows and live database validation on Linux ARM64/macOS remain outstanding.
-- Dedicated BLOB export/preview, lossless SQL export/import, runtime query analysis, arrays and custom BLOB subtypes are not implemented. Primary-key/identity status changes require explicit SQL.
-- Host query-timeout UI support depends on the registry schema; use the plugin timeout setting or explicit connection parameter. Older hosts that discard a cancelled response can temporarily show stale transaction state. The new state RPC requires a compatible host before it can refresh that indicator.
-- UTF8 is recommended. Firebird applies the chosen connection character set and rejects text it cannot represent; other legacy codecs have not each had a language-specific live roundtrip.
-
-See [DEVELOPMENT.md](https://github.com/TabularisDB/tabularis-firebird-plugin/blob/v0.2.0-beta.5/DEVELOPMENT.md) for the complete checklist and transaction semantics.
+- Full database SQL export/import including domains, routines, triggers, grants, dependency ordering and generator states is still open. The new INSERT renderer transfers data to existing compatible tables and is not a complete backup.
+- The Host PSQL/cancellation patch is merged, but the latest published Host checked is still v0.32.0 without it. A compatible Host release and registry schema deployment are required before enabling the PSQL, routine-management, query-timeout and column-statistics integration flags.
+- Native Linux/macOS desktop flows, macOS clients against Firebird 3/4, guided Firebird trigger editing and sustained-load validation remain separate completion items. Native file dialogs and installation UI buttons were not covered by the automated Tauri IPC checks.
+- Arrays, nonstandard BLOB subtypes, embedded access and TLS configuration remain unsupported. Firebird wire encryption is implemented separately from TLS.
+- Writes and explicit commits have real effects. Generator increments are not transactional, and unknown commit outcomes must not be automatically retried.
 
 ## Validation and packages
 
-Local workspace tests, formatting and Clippy pass. Portable Windows and native Linux x64 tests against Firebird 3/4/5 cover writes/rollback, sessions, metadata, DDL, plans, cancellation/timeouts, roles, text/BLOB encoding, encryption policies and failure injection. Windows fixtures use Firebird 3.0.14, 4.0.7 and 5.0.4. Temporary test servers, databases and credentials are removed after testing.
+Formatting, workspace tests and plugin Clippy pass. The extended portable Windows suites passed Firebird 3.0.14, 4.0.7 and 5.0.4, including SQL data roundtrips with long binary/Unicode BLOBs, exact decimals, identity and computed columns. The 17-job native platform/live matrix passed on the Beta.6 runtime and dialect correction. Every temporary local server, database, credential and test profile was removed; normal Tabularis configuration hashes were unchanged.
 
-The release workflow must pass all checks before publishing: native build/unit/protocol/package tests for Linux x64/ARM64, macOS x64/ARM64 and Windows x64, plus live Firebird 3/4/5 tests. Each ZIP includes the executable, manifest and license notices; `default.tabularium` is the standalone manifest asset. GitHub publication does not itself confirm registry ingestion or registry signing.
+The release workflow reruns its required checks before publishing Linux x64/ARM64, macOS x64/ARM64 and Windows x64 packages. Each ZIP includes executable, manifest and license notices. `default.tabularium` is the standalone manifest asset. GitHub publication does not confirm registry ingestion/signing or replace the remaining validation above.
