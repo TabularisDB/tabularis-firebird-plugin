@@ -1,6 +1,11 @@
-# Firebird driver 0.2.0-beta.4
+# Firebird driver 0.2.0-beta.5
 
 Writable prerelease from [TabularisDB/tabularis-firebird-plugin](https://github.com/TabularisDB/tabularis-firebird-plugin). Earlier release assets and tags remain unchanged; the previously published v0.1.0 is the read-only stable release in the original repository.
+
+## Changes since 0.2.0-beta.4
+
+- Fix connection startup in hosts that validate connection-local data types. Firebird's `BOOLEAN` type now uses the supported `other` category; the SQL type and values remain Boolean. The previous `boolean` category made the host reject metadata after a successful connection test. Contract tests now reject unsupported categories in both the static manifest and live metadata responses.
+- Add an isolated Windows launcher for testing the actual React frontend, web transport and application APIs with disposable Firebird. Explicit runtime paths and a secrets provider that refuses OS credential access protect the normal profile. Native Tauri transport and Linux/macOS GUI validation remain separate checks.
 
 ## Changes since 0.2.0-beta.3
 

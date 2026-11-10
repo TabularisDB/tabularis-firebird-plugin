@@ -99,12 +99,34 @@ struct ConnectionMetadata {
 #[derive(Deserialize)]
 struct DataType {
     name: String,
-    category: String,
+    category: DataTypeCategory,
     requires_length: bool,
     requires_precision: bool,
     default_length: Option<String>,
     #[serde(default)]
     supports_auto_increment: bool,
+}
+
+// ConnectionMetadataOverrides::resolve accepts these categories in the host.
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum DataTypeCategory {
+    Numeric,
+    String,
+    Date,
+    Binary,
+    Json,
+    Spatial,
+    Other,
+}
+
+#[test]
+fn manifest_data_types_satisfy_connection_metadata_contract() {
+    let manifest: Value = serde_json::from_str(include_str!("../.tabularium")).unwrap();
+    validate_response(
+        "get_connection_metadata",
+        &serde_json::json!({"data_types": manifest["data_types"]}),
+    );
 }
 
 pub fn validate_response(method: &str, value: &Value) {

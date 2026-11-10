@@ -1,6 +1,6 @@
 {
   "name": "firebird",
-  "version": "0.2.0-beta.4",
+  "version": "0.2.0-beta.5",
   "connection_metadata": true,
   "description": "Tabularis driver plugin for Firebird",
   "kind": "driver",
@@ -58,7 +58,7 @@
     {"name":"DECIMAL","category":"numeric","requires_length":false,"requires_precision":true},
     {"name":"CHAR","category":"string","requires_length":true,"requires_precision":false,"default_length":"1"},
     {"name":"VARCHAR","category":"string","requires_length":true,"requires_precision":false,"default_length":"255"},
-    {"name":"BOOLEAN","category":"boolean","requires_length":false,"requires_precision":false},
+    {"name":"BOOLEAN","category":"other","requires_length":false,"requires_precision":false},
     {"name":"DATE","category":"date","requires_length":false,"requires_precision":false},
     {"name":"TIME","category":"date","requires_length":false,"requires_precision":false},
     {"name":"TIMESTAMP","category":"date","requires_length":false,"requires_precision":false},

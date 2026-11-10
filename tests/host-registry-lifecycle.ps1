@@ -19,7 +19,7 @@ $targetRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot 'target')) + [IO.Path]
 if (!$testRoot.StartsWith($targetRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'Unsafe test root' }
 New-Item -ItemType Directory -Path $testRoot | Out-Null
 $savedEnvironment = @{}
-foreach ($key in @('APPDATA','LOCALAPPDATA','FIREBIRD_REGISTRY_TEST_ROOT','FIREBIRD_REGISTRY_OLD_VERSION','FIREBIRD_REGISTRY_NEW_VERSION','PERL','LC_ALL','LANG')) {
+foreach ($key in @('APPDATA','LOCALAPPDATA','TABULARIS_DATA_DIR','FIREBIRD_REGISTRY_TEST_ROOT','FIREBIRD_REGISTRY_OLD_VERSION','FIREBIRD_REGISTRY_NEW_VERSION','PERL','LC_ALL','LANG')) {
     $savedEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
 }
 $exampleCreated = $false
@@ -30,6 +30,8 @@ try {
         [Environment]::SetEnvironmentVariable($key, $dir, 'Process')
     }
     $env:FIREBIRD_REGISTRY_TEST_ROOT = $testRoot
+    $env:TABULARIS_DATA_DIR = Join-Path $testRoot 'storage'
+    New-Item -ItemType Directory -Path $env:TABULARIS_DATA_DIR | Out-Null
     $env:FIREBIRD_REGISTRY_OLD_VERSION = $OldVersion
     $env:FIREBIRD_REGISTRY_NEW_VERSION = (Get-Content -Raw (Join-Path $repoRoot '.tabularium') | ConvertFrom-Json).version
     $portablePerl = Join-Path $repoRoot 'target/tooling/strawberry/perl/bin/perl.exe'
