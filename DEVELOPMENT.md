@@ -1,6 +1,6 @@
-# Driver completion (0.2.0-beta.7 candidate)
+# Driver completion (0.2.0-beta.7)
 
-Beta.7 adds complete logical database SQL transfers and binary OCTETS handling. Its companion Host change negotiates whole-file transfers and provides a native SQL trigger editor. Validation and remaining deployment requirements are tracked in [the Beta.7 report](tests/results/beta7.md). Beta.6 remains the published, registry-signed release until the new release checks finish; see [its publication verification](tests/results/beta6-release.md).
+Beta.7 is published and registry-signed, adding complete logical database SQL transfers and binary OCTETS handling. Its companion Host change negotiates whole-file transfers and provides a native SQL trigger editor. Validation and remaining deployment requirements are tracked in [the Beta.7 report](tests/results/beta7.md); actual asset and signature checks are recorded in [publication verification](tests/results/beta7-release.md).
 
 Full database export now reconstructs domains, routines/packages, legacy UDF and filter declarations, ordinary/GTT tables, dependent views, checks/FKs/indexes, triggers, collations, role system privileges/default roles, grants, mappings and generator state. A complete live roundtrip compares catalog metadata and data and exercises failed-restore cleanup and existing-target protection. Unsupported SQL representations fail explicitly and preserve the previous export; the 8 MiB record limit remains. Registry flags remain gated on schema deployment. See README for the exact Host requirements and limits.
 
