@@ -51,7 +51,7 @@ args=()
 while (( $# )); do
   case $1 in
     -machine) args+=("$1" "${2/accel=hvf/accel=tcg}"); shift 2 ;;
-    -cpu) args+=("$1" max); shift 2 ;;
+    -cpu) if [[ $2 == help ]]; then args+=("$1" "$2"); else args+=("$1" max); fi; shift 2 ;;
     *) args+=("$1"); shift ;;
   esac
 done
@@ -59,6 +59,7 @@ exec "$FIREBIRD_QEMU_REAL" "${args[@]}"
 SH
 chmod 700 "$profile/bin/qemu-tcg"
 export QEMU_SYSTEM_X86_64="$profile/bin/qemu-tcg"
+"$QEMU_SYSTEM_X86_64" -cpu help >/dev/null
 cat > "$profile/firebird.yaml" <<YAML
 vmType: qemu
 arch: x86_64
