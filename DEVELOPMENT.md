@@ -1,5 +1,7 @@
 # Driver completion (0.2.0-beta.6)
 
+Beta.6 is published and registry-signed. All 18 release jobs, the six actual downloads/digests, archive manifests/licenses/permissions, downloaded Windows RPC and the real isolated Host Beta.5-to-Beta.6 update lifecycle passed. See [publication verification](tests/results/beta6-release.md). This remains a prerelease with the completion items below outstanding.
+
 Beta.6 adds complete host-format binary BLOBs, primary-key-guarded preview/export RPCs, lossless SQL data rendering for existing compatible tables, bounded SELECT runtime measurements and masked column statistics. Windows Firebird 3.0.14, 4.0.7 and 5.0.4 pass the extended live suite, including a SQL roundtrip with long binary/Unicode BLOBs, exact decimals, identity and computed columns. Full schema/database reconstruction and generator reseeding remain outside the SQL data renderer; exports exceeding 8 MiB per statement fail explicitly. Registry flags remain gated on schema deployment. See README for the exact Host requirements and limits.
 
 The requested export/import completion scope is now the **entire Firebird database**, including domains, routines, triggers, grants, dependency order and generator states. The Beta.6 data renderer is a tested prerequisite; it does not complete that scope. A consistent full-database snapshot, metadata reconstruction and a verified restore into a fresh database remain required before that feature can be advertised.
