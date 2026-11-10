@@ -108,7 +108,7 @@ def main():
         success("BEGIN", "restart")
         success("INSERT INTO FB_RESTART_TEST VALUES (2)", "restart")
         success("COMMIT", "restart")
-        if success("SELECT COUNT(*) FROM FB_RESTART_TEST", "restart")["rows"] != [[1]]:
+        if success("SELECT COUNT(*) FROM FB_RESTART_TEST")["rows"] != [[1]]:
             raise RuntimeError("Fresh transaction after restart failed")
         success("DROP TABLE FB_RESTART_TEST")
         print("Verified complete server crash, rollback and fresh committed work in the same plugin process.")
