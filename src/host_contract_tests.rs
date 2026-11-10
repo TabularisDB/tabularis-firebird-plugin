@@ -138,6 +138,7 @@ struct ColumnTopValue {
 #[test]
 fn manifest_data_types_satisfy_connection_metadata_contract() {
     let manifest: Value = serde_json::from_str(include_str!("../.tabularium")).unwrap();
+    assert_eq!(manifest["capabilities"]["sql_dialect"], "generic");
     validate_response(
         "get_connection_metadata",
         &serde_json::json!({"data_types": manifest["data_types"]}),
