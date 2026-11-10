@@ -126,8 +126,10 @@ try {
   await wait(() => fs.existsSync(dump) && fs.statSync(dump).size > 0, 'whole-database SQL export', 240);
   assert(fs.readFileSync(dump, 'utf8').startsWith('-- Tabularis Firebird SQL 1 '));
   await wait(() => evaluate(() => !document.body.textContent.includes('Dump Database -')), 'export completed');
+  await wait(() => click('OK', 'body > div[role="presentation"]'), 'export completion notice');
   pass('native whole-database dump action');
   assert(await click('Run SQL File...'));
+  await wait(() => click('OK', '[role="dialog"]'), 'confirm selected fixture SQL file');
   await wait(() => evaluate(() => !!document.querySelector('[role="dialog"] input[type="checkbox"]')), 'restore destination dialog');
   const target = connection.database + '.native-ui.fdb';
   assert(await evaluate(target => {const input = document.querySelector('[role="dialog"] input:not([type="checkbox"])'); if (!input) return false; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, target); input.dispatchEvent(new Event('input', {bubbles: true})); return true;}, target));

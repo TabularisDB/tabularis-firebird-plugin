@@ -73,7 +73,7 @@ Batch metadata requests require a `tables` array of non-empty names without trai
 
 Full logical database SQL export and restore are available through the optional
 `get_database_sql_capabilities`, `export_database_sql` and `import_database_sql`
-RPCs. The companion [Host PR #1469](https://github.com/TabularisDB/tabularis/pull/1469)
+RPCs. The companion [Host PR #1470](https://github.com/TabularisDB/tabularis/pull/1470)
 connects them to database dump/import and provides native trigger SQL editing for
 generic dialects. Older hosts retain their previous transfer path.
 

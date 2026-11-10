@@ -15,7 +15,7 @@ database, and a failed newly-created restore attempts bounded cleanup. Existing
 empty targets can retain partial work on SQL errors. Binary OCTETS columns now
 retain their raw bytes through both wire decoders and SQL rendering.
 
-[Host PR #1469](https://github.com/TabularisDB/tabularis/pull/1469) adds the shared
+[Host PR #1470](https://github.com/TabularisDB/tabularis/pull/1470) adds the shared
 desktop/web integration, explicit restore destination UI and a generic-dialect
 trigger SQL editor that sends complete PSQL without dropping the old trigger.
 These require that Host change to be merged and released. PSQL, routine-menu,

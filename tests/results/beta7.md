@@ -1,7 +1,7 @@
 # Beta.7 validation and deployment
 
 The candidate implements whole-database logical SQL transfers and OCTETS/BINARY
-values. The companion Host PR #1469 negotiates optional whole-file RPCs through
+values. The companion Host PR #1470 negotiates optional whole-file RPCs through
 both transports and adds a complete-statement trigger SQL editor for generic
 dialects. Existing drivers retain their default transfer implementation.
 
@@ -14,7 +14,7 @@ BLOB-filter declarations, role system privileges/default roles, grants, mappings
 and active DDL triggers. Existing/nonempty targets are protected; a failed newly
 created restore is removed. Workspace and strict plugin Clippy checks pass.
 
-Host checks include 20 React tests, TypeScript/build/lint checks and 149 focused
+Host checks include 21 React tests, TypeScript/build/lint checks and 149 focused
 backend tests. New cases cover whole-file dispatch without metadata attachment
 or PSQL splitting, preservation of old exports, prevention of generic SQL
 fallback on database creation, browser path rejection, protocol fallback codes,
@@ -31,7 +31,15 @@ operator-managed kind-extension settings. Apply
 after deploying a compatible Host release. Do not replace the entire extension
 object or publish stripped capability flags.
 
-Native GUI and candidate CI/release evidence is appended after completion.
+Windows native WebView/IPC checks pass for editor execution, trigger creation,
+immediate edit/save, metadata preservation, failed-save recovery, whole-database
+GUI export and explicit new-database restore with binary data and routines.
+Existing destinations remain protected. OS file pickers use the Host's existing
+E2E mock with owned paths; the disposable build denies OS secrets.
+
+Automatically named PK/NOT NULL constraints are preserved without name
+collisions, including subsequent automatic constraint creation on restored data.
+Candidate CI/release evidence is appended after completion.
 The successful two-hour baseline soak run was 42813658201 at a606c9d; it is
 evidence for the prior runtime, not a Beta.7 measurement.
 

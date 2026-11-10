@@ -17,6 +17,7 @@ use rsfbclient_core::{
 };
 use serde_json::{json, Value};
 use std::{
+    collections::HashMap,
     fs::{self, File, OpenOptions},
     io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
@@ -481,6 +482,7 @@ fn catalog(client: &mut Client) -> Result<Schema, PluginError> {
     }
     let mut deferred_columns = vec![];
     let mut deferred_defaults = vec![];
+    let mut table_statements = HashMap::new();
     let relations=client.query_objects("SELECT TRIM(RDB$RELATION_NAME) AS \"name\", RDB$DESCRIPTION AS \"comment\", RDB$RELATION_TYPE AS \"type\", RDB$EXTERNAL_FILE AS \"external\" FROM RDB$RELATIONS WHERE COALESCE(RDB$SYSTEM_FLAG,0)=0 AND RDB$VIEW_BLR IS NULL ORDER BY RDB$RELATION_NAME",vec![])?;
     for relation in relations {
         if !relation["external"].is_null()
@@ -491,7 +493,7 @@ fn catalog(client: &mut Client) -> Result<Schema, PluginError> {
             ));
         }
         let table_name = text(&relation, "name")?.to_string();
-        let columns=client.query_objects(&format!(r#"SELECT TRIM(r.RDB$FIELD_NAME) AS "name", TRIM(r.RDB$FIELD_SOURCE) AS "domain", {FIELD_TYPE_SQL} AS "data_type", f.RDB$FIELD_TYPE AS "field_type", f.RDB$FIELD_SUB_TYPE AS "subtype", f.RDB$CHARACTER_SET_ID AS "charset_id", TRIM(cs.RDB$CHARACTER_SET_NAME) AS "charset", TRIM(c.RDB$COLLATION_NAME) AS "collation", r.RDB$NULL_FLAG AS "not_null", r.RDB$DEFAULT_SOURCE AS "default", f.RDB$COMPUTED_SOURCE AS "computed", r.RDB$IDENTITY_TYPE AS "identity", TRIM(r.RDB$GENERATOR_NAME) AS "generator", r.RDB$DESCRIPTION AS "comment" FROM RDB$RELATION_FIELDS r JOIN RDB$FIELDS f ON f.RDB$FIELD_NAME=r.RDB$FIELD_SOURCE LEFT JOIN RDB$CHARACTER_SETS cs ON cs.RDB$CHARACTER_SET_ID=f.RDB$CHARACTER_SET_ID LEFT JOIN RDB$COLLATIONS c ON c.RDB$CHARACTER_SET_ID=f.RDB$CHARACTER_SET_ID AND c.RDB$COLLATION_ID=COALESCE(r.RDB$COLLATION_ID,f.RDB$COLLATION_ID,0) WHERE r.RDB$RELATION_NAME=? ORDER BY r.RDB$FIELD_POSITION"#),vec![SqlType::Text(table_name.clone())])?;
+        let columns=client.query_objects(&format!(r#"SELECT TRIM(r.RDB$FIELD_NAME) AS "name", TRIM(r.RDB$FIELD_SOURCE) AS "domain", {FIELD_TYPE_SQL} AS "data_type", f.RDB$FIELD_TYPE AS "field_type", f.RDB$FIELD_SUB_TYPE AS "subtype", f.RDB$CHARACTER_SET_ID AS "charset_id", TRIM(cs.RDB$CHARACTER_SET_NAME) AS "charset", TRIM(c.RDB$COLLATION_NAME) AS "collation", r.RDB$NULL_FLAG AS "not_null", f.RDB$NULL_FLAG AS "domain_not_null", EXISTS(SELECT 1 FROM RDB$RELATION_CONSTRAINTS p JOIN RDB$INDEX_SEGMENTS s ON s.RDB$INDEX_NAME=p.RDB$INDEX_NAME WHERE p.RDB$RELATION_NAME=r.RDB$RELATION_NAME AND p.RDB$CONSTRAINT_TYPE='PRIMARY KEY' AND s.RDB$FIELD_NAME=r.RDB$FIELD_NAME) AS "primary_key", (SELECT TRIM(c.RDB$CONSTRAINT_NAME) FROM RDB$RELATION_CONSTRAINTS c JOIN RDB$CHECK_CONSTRAINTS n ON n.RDB$CONSTRAINT_NAME=c.RDB$CONSTRAINT_NAME WHERE c.RDB$RELATION_NAME=r.RDB$RELATION_NAME AND c.RDB$CONSTRAINT_TYPE='NOT NULL' AND n.RDB$TRIGGER_NAME=r.RDB$FIELD_NAME) AS "null_constraint", r.RDB$DEFAULT_SOURCE AS "default", f.RDB$COMPUTED_SOURCE AS "computed", r.RDB$IDENTITY_TYPE AS "identity", TRIM(r.RDB$GENERATOR_NAME) AS "generator", r.RDB$DESCRIPTION AS "comment" FROM RDB$RELATION_FIELDS r JOIN RDB$FIELDS f ON f.RDB$FIELD_NAME=r.RDB$FIELD_SOURCE LEFT JOIN RDB$CHARACTER_SETS cs ON cs.RDB$CHARACTER_SET_ID=f.RDB$CHARACTER_SET_ID LEFT JOIN RDB$COLLATIONS c ON c.RDB$CHARACTER_SET_ID=f.RDB$CHARACTER_SET_ID AND c.RDB$COLLATION_ID=COALESCE(r.RDB$COLLATION_ID,f.RDB$COLLATION_ID,0) WHERE r.RDB$RELATION_NAME=? ORDER BY r.RDB$FIELD_POSITION"#),vec![SqlType::Text(table_name.clone())])?;
         let mut definitions = vec![];
         for column in &columns {
             let mut definition = format!("{} ", name(column)?);
@@ -529,7 +531,16 @@ fn catalog(client: &mut Client) -> Result<Schema, PluginError> {
                         name(column)?
                     ));
                 }
-                if column["not_null"] == 1 {
+                // Identity, domain and primary-key nullability needs no new named constraint.
+                if column["not_null"] == 1
+                    && (column["null_constraint"].is_string()
+                        || (column["identity"].is_null()
+                            && column["primary_key"] != true
+                            && column["domain_not_null"] != 1))
+                {
+                    if let Some(constraint) = source(column, "null_constraint") {
+                        definition.push_str(&format!(" CONSTRAINT {}", identifier(&constraint)?));
+                    }
                     definition.push_str(" NOT NULL");
                 }
                 if let Some(collation) = source(column, "collation") {
@@ -551,6 +562,7 @@ fn catalog(client: &mut Client) -> Result<Schema, PluginError> {
         if definitions.is_empty() {
             return Err(error("Catalog table has no stored columns"));
         }
+        table_statements.insert(table_name.clone(), schema.before.len());
         schema.before.push(format!(
             "CREATE {}TABLE {} (\n{}\n){}{}",
             if matches!(relation["type"].as_i64(), Some(4 | 5)) {
@@ -625,7 +637,16 @@ fn catalog(client: &mut Client) -> Result<Schema, PluginError> {
         if row["kind"] == "FOREIGN KEY" {
             schema.after.push(sql);
         } else {
-            schema.before.push(sql);
+            // Inline keys retain the engine's implicit NOT NULL semantics.
+            let prefix = format!("ALTER TABLE {} ADD ", identifier(text(row, "table")?)?);
+            let clause = sql
+                .strip_prefix(&prefix)
+                .ok_or_else(|| error("Invalid key declaration"))?;
+            let create = &mut schema.before[table_statements[text(row, "table")?]];
+            let position = create
+                .rfind("\n)")
+                .ok_or_else(|| error("Invalid table declaration"))?;
+            create.insert_str(position, &format!(",\n{clause}"));
         }
         if let Some(backing) = backing.first() {
             comment(
@@ -1417,6 +1438,7 @@ mod tests {
             "DECLARE EXTERNAL FUNCTION E_LEGACY_TEXT CSTRING(40) RETURNS CSTRING(40) FREE_IT ENTRY_POINT 'e_legacy_text' MODULE_NAME 'tabularis_fixture_missing'",
             "CREATE TABLE E_PARENT (TENANT INTEGER, ID INTEGER, LABEL E_LABEL, CONSTRAINT E_PPK PRIMARY KEY(TENANT,ID))",
             "CREATE TABLE E_CHILD (ID BIGINT GENERATED BY DEFAULT AS IDENTITY (START WITH 10), TENANT INTEGER, PARENT_ID INTEGER, AMOUNT E_AMOUNT, BIN BLOB SUB_TYPE BINARY, NOTES BLOB SUB_TYPE TEXT CHARACTER SET UTF8, OCTETS_VALUE VARCHAR(8) CHARACTER SET OCTETS DEFAULT x'00ff80', DERIVED COMPUTED BY (ID+1), CONSTRAINT E_CPK PRIMARY KEY(ID), CONSTRAINT E_FK FOREIGN KEY(TENANT,PARENT_ID) REFERENCES E_PARENT(TENANT,ID) ON UPDATE CASCADE ON DELETE SET NULL USING DESCENDING INDEX E_FK_IDX, CONSTRAINT E_CHECK CHECK (TENANT>=0))",
+            "CREATE TABLE E_AUTO (ID BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY, V INTEGER NOT NULL)",
             "CREATE DESCENDING INDEX E_DESC ON E_CHILD(TENANT,PARENT_ID)",
             "ALTER INDEX E_DESC INACTIVE",
             "CREATE INDEX E_EXPR ON E_PARENT COMPUTED BY (UPPER(LABEL))",
@@ -1521,7 +1543,7 @@ mod tests {
         client.execute("CREATE TRIGGER E_DDL ACTIVE BEFORE ANY DDL STATEMENT POSITION 5 AS BEGIN EXCEPTION E_BAD; END",vec![],0,None,None).unwrap();
         drop(client);
         let dump = export(&json!({"params":original,"file_path":file})).unwrap();
-        assert_eq!(dump["tables"], 4);
+        assert_eq!(dump["tables"], 5);
         assert_eq!(dump["rows"], 3);
         let restored =
             restore(&json!({"params":target,"file_path":file,"create_database":true})).unwrap();
@@ -1540,6 +1562,7 @@ mod tests {
             "SELECT * FROM E_CHILD ORDER BY ID",
 
             "SELECT RDB$RELATION_TYPE FROM RDB$RELATIONS WHERE RDB$RELATION_NAME IN ('E_GTT_PRESERVE','E_GTT_DELETE') ORDER BY RDB$RELATION_NAME",
+            "SELECT RDB$RELATION_NAME,RDB$CONSTRAINT_NAME,RDB$CONSTRAINT_TYPE FROM RDB$RELATION_CONSTRAINTS WHERE RDB$RELATION_NAME STARTING WITH 'E_' ORDER BY RDB$RELATION_NAME,RDB$CONSTRAINT_NAME",
             "SELECT RDB$DESCRIPTION FROM RDB$PROCEDURE_PARAMETERS WHERE RDB$PROCEDURE_NAME='E_ADD' AND RDB$PARAMETER_NAME='N'",
             "SELECT * FROM E_VIEW ORDER BY E_ID",
             "SELECT * FROM E_ADD(41)",
@@ -1575,6 +1598,15 @@ mod tests {
             .unwrap()["rows"][0][0]
             .clone();
         for client in [&mut source, &mut copy] {
+            client
+                .execute(
+                    "CREATE TABLE E_FUTURE(ID INTEGER PRIMARY KEY, V INTEGER NOT NULL)",
+                    vec![],
+                    0,
+                    None,
+                    None,
+                )
+                .unwrap();
             assert!(client
                 .execute(
                     "INSERT INTO E_CHILD(TENANT,PARENT_ID,AMOUNT) VALUES(1,10,-1)",
