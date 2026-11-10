@@ -2,7 +2,7 @@
 param(
     [Parameter(Mandatory)][ref]$ServerProcess,
     [Parameter(Mandatory)][string]$ServerDir,
-    [ValidateRange(5, 600)][int]$DurationSeconds = 30
+    [ValidateRange(5, 7200)][int]$DurationSeconds = 30
 )
 $ErrorActionPreference = 'Stop'
 $config = Get-Content -Raw -LiteralPath $env:FIREBIRD_TEST_CONFIG | ConvertFrom-Json

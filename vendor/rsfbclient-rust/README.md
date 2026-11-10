@@ -21,6 +21,16 @@ Local functional changes:
 
 Replace this copy with an upstream release when it exposes statement metadata, exact decimal values and faithful temporal values. No Firebird server/client binaries are included here.
 
+## Updating this copy
+
+Treat an update as a protocol change, even if the upstream Rust API still compiles. Preserve the MIT license and upstream provenance above. Start from the published crate recorded here, compare it with this directory, and review the candidate upstream changes separately; do not replace this directory wholesale or assume a version bump includes our patches.
+
+For each local change listed above, record whether the candidate supplies equivalent behavior or still needs the patch. In particular, check `crypt.rs`/`wire.rs` for cipher framing, counters and partial-write poisoning; `client.rs`/`socket_io.rs` for caller-owned sockets, cancellation/rebinding and Windows backpressure; `wire.rs`/`xsqlda.rs` for BLOB descriptors, strict encodings, exact numerics and temporal values; and statement metadata/affected counts used by the plugin. Update the source version/commit and this inventory when the baseline changes.
+
+Before shipping an update, run `cargo fmt --all -- --check`, `cargo test --workspace --locked` and `cargo clippy --all-targets --no-deps --locked -- -D warnings` from the plugin root. The workspace tests include the vendored cipher, socket, encoding and SQLDA regressions. Then require the existing CI matrix: native package tests on all five platforms, Windows and Linux x64 live tests against Firebird 3/4/5, Windows restart/rollback tests, and Firebird 5's forced ChaCha64/ChaCha/Arc4/plaintext policies. Verify the resulting release archives and registry signatures as documented in the root README. Keep published tags and signed assets unchanged.
+
+Retire a patch only when the equivalent upstream behavior passes its existing regression and the live matrix. Local vendoring remains necessary until all required behaviors are available together; this procedure does not imply the changes have been accepted upstream.
+
 Wire references: [Firebird ChaCha plugin](https://github.com/FirebirdSQL/firebird/blob/master/src/plugins/crypt/chacha/ChaCha.cpp), [server key extraction](https://github.com/FirebirdSQL/firebird/blob/master/src/remote/server/server.cpp), and the [wire protocol](https://firebirdsql.org/file/documentation/html/en/firebirddocs/wireprotocol/firebird-wire-protocol.html).
 
 Text references: [native BLOB2 descriptors](https://github.com/FirebirdSQL/firebird/blob/master/src/remote/client/BlrFromMessage.cpp), [Jaybird BLOB parameter buffers](https://github.com/FirebirdSQL/jaybird/blob/master/src/main/org/firebirdsql/jdbc/FBBlob.java), and [UTF-8 DPB strings](https://github.com/FirebirdSQL/jaybird/blob/master/src/main/org/firebirdsql/gds/ng/wire/version13/V13ParameterConverter.java). Firebird applies the attachment character set before returning text; values outside that character set must produce an error, never replacement characters.

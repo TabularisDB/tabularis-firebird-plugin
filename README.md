@@ -101,8 +101,8 @@ For a repeatable live test on Windows:
 ./tests/live-firebird.ps1 -Port 13051
 # Full process restart, rollback/recovery and 30-second measured load:
 ./tests/live-firebird.ps1 -Version 5 -OperationalTests
-# Longer local run (seconds, at most 600):
-./tests/live-firebird.ps1 -Version 5 -OperationalTests -OperationalDurationSeconds 300
+# Longer local run (seconds, at most 7200; opt-in two-hour run):
+./tests/live-firebird.ps1 -Version 5 -OperationalTests -OperationalDurationSeconds 7200
 ```
 
 The script downloads the official portable Firebird 3.0.14, 4.0.7 or 5.0.4 ZIP (verifying its pinned SHA-256), creates an isolated fixture database and random local test credentials under the ignored `target/firebird-test` directory, binds to `127.0.0.1`, and runs live catalog/query tests plus a stdio test of the executable. Its `finally` block stops its server and deletes the entire test directory, including the download, extracted server, database, lock files and credentials, on success or failure. It installs no service. It refuses to overwrite a pre-existing test directory. Windows CI runs the same script for all three versions.

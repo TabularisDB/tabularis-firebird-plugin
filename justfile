@@ -2,16 +2,16 @@ set shell := ["bash", "-cu"]
 set windows-shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-Command"]
 
 # ---------------------------------------------------------------------------
-# Cross-platform recipes (only shell-agnostic tooling — cargo, npm).
+# Cross-platform Cargo recipes.
 # ---------------------------------------------------------------------------
 
-# Build the plugin binary in debug mode (plus UI if present).
-build: build-ui
-    cargo build
+# Build the driver executable in debug mode.
+build:
+    cargo build --locked --bin firebird-plugin
 
 # Build for release (what the GitHub Actions workflow ships).
-release: build-ui
-    cargo build --release
+release:
+    cargo build --release --locked --bin firebird-plugin
 
 # Run unit tests.
 test:
@@ -33,39 +33,12 @@ fmt:
 # Platform-specific recipes (file operations + plugin-dir conventions).
 # ---------------------------------------------------------------------------
 
-# Build the UI extension if present (no-op otherwise).
-[unix]
-build-ui:
-    @if [ -f ui/package.json ]; then \
-        echo "Building UI extension..."; \
-        (cd ui && npm install --no-audit --no-fund && npm run build); \
-    fi
-
-[windows]
-build-ui:
-    if (Test-Path ui/package.json) {
-        Write-Host "Building UI extension..."
-        Push-Location ui
-        try {
-            npm install --no-audit --no-fund
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            npm run build
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-        } finally {
-            Pop-Location
-        }
-    }
-
-# Build + copy binary, manifest and (if present) UI bundle into Tabularis's plugin folder.
+# Build and copy the driver and manifest into Tabularis's plugin folder.
 [linux]
 dev-install: build
     mkdir -p ~/.local/share/tabularis/plugins/drivers/firebird
     cp target/debug/firebird-plugin ~/.local/share/tabularis/plugins/drivers/firebird/
     cp .tabularium ~/.local/share/tabularis/plugins/drivers/firebird/
-    @if [ -f ui/dist/index.js ]; then \
-        mkdir -p ~/.local/share/tabularis/plugins/drivers/firebird/ui/dist; \
-        cp ui/dist/index.js ~/.local/share/tabularis/plugins/drivers/firebird/ui/dist/; \
-    fi
     @echo "Installed to ~/.local/share/tabularis/plugins/drivers/firebird"
     @echo "Restart Tabularis (or toggle the plugin in Settings) to pick up changes."
 
@@ -74,10 +47,6 @@ dev-install: build
     mkdir -p "$HOME/Library/Application Support/tabularis/plugins/drivers/firebird"
     cp target/debug/firebird-plugin "$HOME/Library/Application Support/tabularis/plugins/drivers/firebird/"
     cp .tabularium "$HOME/Library/Application Support/tabularis/plugins/drivers/firebird/"
-    @if [ -f ui/dist/index.js ]; then \
-        mkdir -p "$HOME/Library/Application Support/tabularis/plugins/drivers/firebird/ui/dist"; \
-        cp ui/dist/index.js "$HOME/Library/Application Support/tabularis/plugins/drivers/firebird/ui/dist/"; \
-    fi
     @echo "Installed to ~/Library/Application Support/tabularis/plugins/drivers/firebird"
     @echo "Restart Tabularis (or toggle the plugin in Settings) to pick up changes."
 
@@ -87,10 +56,6 @@ dev-install: build
     New-Item -ItemType Directory -Force -Path $dest | Out-Null
     Copy-Item "target\debug\firebird-plugin.exe" $dest
     Copy-Item ".tabularium" $dest
-    if (Test-Path "ui\dist\index.js") {
-        New-Item -ItemType Directory -Force -Path (Join-Path $dest "ui\dist") | Out-Null
-        Copy-Item "ui\dist\index.js" (Join-Path $dest "ui\dist")
-    }
     Write-Host "Installed to $dest"
     Write-Host "Restart Tabularis (or toggle the plugin in Settings) to pick up changes."
 

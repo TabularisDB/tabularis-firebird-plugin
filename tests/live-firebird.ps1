@@ -5,7 +5,7 @@ param(
     [ValidateSet('Default','ChaCha64','ChaCha','Arc4','Disabled')][string]$ServerWireCrypt = 'Default',
     [scriptblock]$AfterTests,
     [switch]$OperationalTests,
-    [ValidateRange(5, 600)][int]$OperationalDurationSeconds = 30
+    [ValidateRange(5, 7200)][int]$OperationalDurationSeconds = 30
 )
 $ErrorActionPreference = 'Stop'
 $savedProgressPreference = $ProgressPreference

@@ -6,12 +6,20 @@ on:
   workflow_call:
 jobs:
   firebird-linux:
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        version: ['3', '4', '5']
+        include:
+          - version: '3'
+            runner: ubuntu-22.04
+          - version: '4'
+            runner: ubuntu-22.04
+          - version: '5'
+            runner: ubuntu-22.04
+          - version: '5'
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
