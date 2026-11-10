@@ -35,7 +35,9 @@ if ! docker image inspect "$image" >/dev/null 2>&1; then owned_image=true; fi
 export FIREBIRD_ROOT_PASSWORD
 FIREBIRD_ROOT_PASSWORD=$(openssl rand -hex 16)
 export ISC_USER=SYSDBA ISC_PASSWORD="$FIREBIRD_ROOT_PASSWORD"
-container=$(docker run --detach --publish 127.0.0.1::3050 \
+# Keep the endpoint stable across a hard container stop/start.
+port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
+container=$(docker run --detach --publish "127.0.0.1:$port:3050" \
   --env FIREBIRD_ROOT_PASSWORD \
   --env FIREBIRD_DATABASE=plugin-test.fdb \
   --env FIREBIRD_DATABASE_DEFAULT_CHARSET=UTF8 \
@@ -74,3 +76,5 @@ PY
 args=(--ignored --test-threads=1)
 if [[ "$version" == 3 ]]; then args+=(--skip _firebird4); fi
 cargo test --locked live_ -- "${args[@]}"
+cargo build --locked --bin firebird-plugin
+python3 tests/restart-firebird.py --container "$container"

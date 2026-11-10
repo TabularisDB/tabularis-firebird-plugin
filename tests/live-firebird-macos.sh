@@ -85,3 +85,8 @@ ISC_PASSWORD=$(python3 -c 'import json,os; print(json.load(open(os.environ["FIRE
 export ISC_PASSWORD
 "$FIREBIRD/bin/isql" -bail -quiet -input tests/fixture.sql "127.0.0.1/13050:$test_dir/plugin-test.fdb"
 cargo test --locked live_ -- --ignored --test-threads=1
+cargo build --locked --bin firebird-plugin
+python3 tests/restart-firebird.py --server-pid "$server_pid" --server-executable "$FIREBIRD/bin/firebird"
+# The helper owns and stops the replacement server; the original was killed.
+wait "$server_pid" 2>/dev/null || true
+server_pid=''
