@@ -1,0 +1,32 @@
+[
+    {
+        "name":  "firebird-plugin-darwin-arm64.zip",
+        "size":  879887,
+        "sha256":  "06282edfb626f36967edd7361f962e019859901461515fc2078d49458ff7e38c"
+    },
+    {
+        "name":  "firebird-plugin-darwin-x64.zip",
+        "size":  927813,
+        "sha256":  "dbf2f407d8e5ff00a289766a77f519f1d4b9bcce0d0889b39757cc276024eeab"
+    },
+    {
+        "name":  "firebird-plugin-linux-arm64.zip",
+        "size":  901714,
+        "sha256":  "22eb434243b01e809f448f58defbd82e9571ede154a6cd2fb02ed5dcb1251d10"
+    },
+    {
+        "name":  "firebird-plugin-linux-x64.zip",
+        "size":  947556,
+        "sha256":  "17ec161eb66a702621bd88602c0cec9c6a22d8c770ed390f23f9362f905fc0f9"
+    },
+    {
+        "name":  "firebird-plugin-win-x64.zip",
+        "size":  903021,
+        "sha256":  "d7d96cf12a988eaef18046c4ea492ab6011816cf8766f6478040a59ca2d59481"
+    },
+    {
+        "name":  "default.tabularium",
+        "size":  4421,
+        "sha256":  "04b49245b0063c550bbb87b42fb6e0ffa9998abc0b811f687bceb536ed626f08"
+    }
+]

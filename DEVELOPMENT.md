@@ -1,6 +1,7 @@
 # Release readiness (1.0.0)
 
-The first stable write-capable release is **1.0.0**. Native Firebird `.fbk`
+The first stable write-capable release, **1.0.0**, is published and registry-signed.
+All seventeen source/package CI jobs passed. Native Firebird `.fbk`
 backup/restore covers arrays, mixed object owners, compiled metadata and large
 BLOBs beyond the logical SQL representation. It uses the existing encrypted
 Rust wire connection and the server's Services API, without a local Firebird
