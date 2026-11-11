@@ -6,7 +6,7 @@ using System.Text;
 public static class FirebirdArrayFixture
 {
     [DllImport("kernel32", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern IntPtr LoadLibrary(string path);
+    private static extern IntPtr LoadLibraryEx(string path, IntPtr file, uint flags);
     [DllImport("fbclient", CallingConvention = CallingConvention.Cdecl)]
     private static extern IntPtr isc_attach_database(IntPtr[] status, short length, byte[] name, ref IntPtr db, short dpbLength, byte[] dpb);
     [DllImport("fbclient", CallingConvention = CallingConvention.Cdecl)]
@@ -31,7 +31,10 @@ public static class FirebirdArrayFixture
 
     public static void Populate(string library, string database, string user, string password)
     {
-        if (IntPtr.Size != 8 || LoadLibrary(library) == IntPtr.Zero) throw new Exception("Could not load the test server's 64-bit fbclient");
+        if (IntPtr.Size != 8) throw new Exception("The native array fixture requires a 64-bit process");
+        // Firebird 3 ships runtime DLLs beside fbclient, outside the runner PATH.
+        if (LoadLibraryEx(library, IntPtr.Zero, 8) == IntPtr.Zero)
+            throw new Exception("Could not load the test server's fbclient dependencies, Windows error " + Marshal.GetLastWin32Error());
         byte[] userBytes = Encoding.UTF8.GetBytes(user), passBytes = Encoding.UTF8.GetBytes(password);
         if (userBytes.Length > 255 || passBytes.Length > 255) throw new Exception("Fixture credentials too long");
         byte[] dpb = new byte[7 + userBytes.Length + passBytes.Length];
