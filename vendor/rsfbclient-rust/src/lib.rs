@@ -7,15 +7,18 @@ mod consts;
 mod crypt;
 mod events;
 mod raw;
+mod services;
 mod socket_io;
 mod srp;
 mod util;
 mod wire;
 mod xsqlda;
 
+pub use client::RustFbService;
 pub use client::{DbHandle, RustFbClient, RustFbClientAttachmentConfig, StmtHandle, TrHandle};
 pub use crypt::{WireCrypt, WireOptions};
 pub use raw::RawValue;
+pub use services::ServiceOutput;
 
 #[cfg(feature = "fuzz_testing")]
 pub use self::{blr::*, wire::*, xsqlda::*};

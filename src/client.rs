@@ -596,7 +596,7 @@ impl Drop for Client {
     }
 }
 
-fn connect_socket(
+pub(crate) fn connect_socket(
     host: &str,
     port: u16,
     seconds: u32,

@@ -1,0 +1,19 @@
+{
+  "version": "1.0.0",
+  "host": "Native backup candidate based on d13cc8fa; final sidebar capability filter was added after this local build",
+  "platform": "win32",
+  "arch": "x64",
+  "checks": [
+    "native editor CREATE/INSERT through UI",
+    "native trigger create/edit/firing, immediate save and metadata preservation",
+    "failed trigger save keeps previous trigger",
+    "native whole-database dump action",
+    "native explicit new-database restore, complete binary data and routines",
+    "existing destination protected",
+    "native FBK format selection and atomic export",
+    "native FBK restore from opaque content and existing-target protection"
+  ],
+  "file_pickers": "Host e2e mock with owned paths",
+  "secrets": "denied by disposable Host build",
+  "final_host_commit": "a2c38c3f47e0e1686232d0058bf59868d7cf5cb2"
+}

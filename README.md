@@ -1,12 +1,12 @@
 # Firebird — Tabularis Plugin
 
-Firebird network driver for [Tabularis](https://github.com/TabularisDB/tabularis), built with a locally patched `rsfbclient-rust` wire driver. No Firebird client DLL is required. The stable v0.1.0 is read-only. The **0.2.0-beta.7 prerelease includes writes, interactive transactions, atomic batches, DDL, prepare-only query plans, roles and character sets**; see [DEVELOPMENT.md](DEVELOPMENT.md) for completed work and remaining limitations.
+Firebird network driver for [Tabularis](https://github.com/TabularisDB/tabularis), built with a locally patched `rsfbclient-rust` wire driver. No Firebird client DLL is required. **1.0.0 includes writes, interactive transactions, atomic batches, DDL, query plans, roles, character sets, logical SQL transfers and complete native Firebird backups.** See [DEVELOPMENT.md](DEVELOPMENT.md) for validation and integration status.
 
 Development and future releases are maintained in [TabularisDB/tabularis-firebird-plugin](https://github.com/TabularisDB/tabularis-firebird-plugin).
 
-Download the current [v0.2.0-beta.5 prerelease](https://github.com/TabularisDB/tabularis-firebird-plugin/releases/tag/v0.2.0-beta.5) for the new functionality. Its release notes describe compatibility changes and outstanding validation.
+Download packaged builds from [GitHub releases](https://github.com/TabularisDB/tabularis-firebird-plugin/releases). Release notes describe compatibility and Host requirements.
 
-The [Tabularis registry entry](https://registry.tabularis.dev/plugins/firebird) is managed separately from GitHub releases; end-to-end registry install/update/uninstall verification remains on the release checklist. The historical [release v0.1.0](https://github.com/lejyfps/tabularis-firebird-plugin/releases/tag/v0.1.0) remains available from the original repository.
+The [Tabularis registry entry](https://registry.tabularis.dev/plugins/firebird) signs release assets separately from GitHub. The historical [release v0.1.0](https://github.com/lejyfps/tabularis-firebird-plugin/releases/tag/v0.1.0) remains available from the original repository.
 
 ## Build and install
 
@@ -103,12 +103,44 @@ Generator counters are nontransactional and
 are sampled at the end of export. This is a logical SQL transfer, not a physical
 backup of server configuration, authentication accounts or encryption keys.
 
-Arrays, nonstandard BLOB subtypes, external-table target paths, mixed object owners,
+Arrays, external-table target paths, mixed object owners,
 unknown catalog encodings and missing expression source are rejected explicitly.
 An unsupported export never replaces an existing backup. Individual SQL records
 are limited to 8 MiB, including encoded data; use an engine backup for databases
 outside these limits. Whole-schema export requires all user tables; data-only
 requests retain the existing table renderer.
+
+### Complete native Firebird backups
+
+For databases outside the SQL representation, use a transportable Firebird
+backup (`.fbk`). `backup_database` and `restore_database` stream the engine's
+backup service directly over the same authenticated, encrypted wire protocol.
+Neither `gbak` nor a Firebird client library needs to be installed locally.
+Arrays, mixed object owners, compiled metadata without SQL source and large
+BLOBs are handled by Firebird itself, without the SQL record or decoded-BLOB
+limits. Normal Firebird backup permissions and engine-version compatibility apply.
+
+`get_database_backup_capabilities` describes the direct RPCs. Both take
+`{params: <connection>, file_path: <local file>}`; restore also requires
+`create_database: true` and a **new server-side database path or alias** in the
+connection. The engine is always called with create-only flags. Replacing an
+existing database is never enabled. Backup uses a private pending file and
+publishes it only on success; restore reads a private snapshot of its input.
+Cancellation, timeouts, invalid files or lost replies can leave a partial new
+database. Such failures report that the target must be checked before retrying;
+the plugin never deletes an unconfirmed target.
+
+The companion Host supports choosing `.sql` or `.fbk` in the database dump
+dialog. It negotiates `native_backup` through the existing SQL-capabilities
+RPC and sends `options: {format: "firebird", structure: true, data: true}` for
+whole-database backup. Import detects native content even when a browser upload
+has an opaque filename. Hosts without that companion change retain their existing
+SQL workflows; the direct native RPCs remain available.
+
+External-table data is included and restored as ordinary tables, avoiding
+source-server file paths. Source shadow files are not recreated. Server accounts,
+configuration, encryption keys and external UDF/UDR modules are separate server
+dependencies and are not bundled in a database backup.
 
 The full SQL file can also be restored into an independently created empty
 database with `isql -bail -nodbtriggers -ch UTF8 -input backup.sql <target>`.
@@ -125,7 +157,7 @@ Result representation and remaining limitations:
 - NUMERIC/DECIMAL values are returned as exact decimal strings, including zero-scale decimals and 38-digit values. Conversion happens on the server before transmission; no floating-point conversion is involved. FLOAT/DOUBLE values remain JSON numbers.
 - DATE, TIME and TIMESTAMP are server-formatted strings preserving their original kind and fractional seconds. Firebird 3 formats TIMESTAMP dates as `29-FEB-2024`, while Firebird 4/5 use `2024-02-29`. WITH TIME ZONE values also retain their named zone or numeric offset; the plugin performs no conversion to the PC's time zone.
 - DECFLOAT(16/34) values are decimal strings, preserving all digits and exponents. Special values such as `NaN`, `Infinity` and `-Infinity` are strings too, so the response remains valid JSON.
-- Binary BLOBs use the host's complete `BLOB:<byte-count>:<mime>:<base64>` wire format; text BLOBs remain strings. Legacy byte arrays are still accepted as bound binary parameters. Arrays and BLOB subtypes other than binary/text remain unsupported and return errors.
+- Non-text BLOBs, including user-defined subtypes, use the host's complete `BLOB:<byte-count>:<mime>:<base64>` wire format; text BLOBs remain strings. Legacy byte arrays are still accepted as bound binary parameters. Array columns require the native backup path; ordinary query/grid array values remain unsupported.
 
 The local driver source and its patches are documented in [vendor/rsfbclient-rust/README.md](vendor/rsfbclient-rust/README.md). It is MIT-licensed; releases include [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Metadata uses read-only transactions. User statements and batches use read-write transactions with explicit commit/rollback and resource cleanup. Unknown commit outcomes are reported explicitly and must not be blindly retried.
 
@@ -248,7 +280,7 @@ Known limits and optional extensions:
 
 - Pagination still scans the full result for an exact count. Buffered results and BLOBs have configurable limits; host cancellation and connect/query deadlines are supported and tested on Firebird 3/4/5. Large-result performance needs further validation.
 - Network connections use SQL dialect 3, with UTF-8 by default and configurable character sets and roles in development builds. Embedded mode and TLS configuration remain unsupported. Modern Firebird wire encryption is implemented separately from TLS.
-- Private package routines, arrays and nonstandard BLOB subtypes remain unsupported. Procedure/function name collisions require the returned identity discriminator. Full routine management and native trigger/editor UX still need validation.
+- Private package routines are excluded from routine browsing. Array data is preserved through native backups; ordinary query/grid array values remain unsupported. Procedure/function name collisions require the returned identity discriminator. Full native editor integration requires the companion Host release.
 - BLOB preview/export, SQL data rendering, runtime SELECT measurements and column statistics are implemented in Beta.6. See the scope and Host requirements below.
 - Tabularis 0.32 displays a Create View action for the published read-only v0.1.0, which rejects view mutations. The writable development branch implements view mutations.
 - The published v0.1.0 remains read-only. The 0.2.0 betas enable writes and interactive transactions; native desktop tests of the new editing/DDL/session flows are still outstanding. Shared React/web UI coverage is recorded in [Windows UI evidence](tests/results/windows-web-ui.md).

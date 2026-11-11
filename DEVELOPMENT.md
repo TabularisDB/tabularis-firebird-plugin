@@ -1,4 +1,24 @@
-# Driver completion (0.2.0-beta.7)
+# Release readiness (1.0.0)
+
+The first stable write-capable release is **1.0.0**. Native Firebird `.fbk`
+backup/restore covers arrays, mixed object owners, compiled metadata and large
+BLOBs beyond the logical SQL representation. It uses the existing encrypted
+Rust wire connection and the server's Services API, without a local Firebird
+installation. Custom BLOB subtypes also work through query and SQL-export paths.
+Current validation is recorded in [the 1.0.0 report](tests/results/1.0.0.md).
+
+The companion Host PR #1470 includes native-format selection. It still needs
+upstream merge and publication before released Tabularis builds expose the new
+transfer UI. The plugin's direct RPCs work independently. Registry schema changes
+were explicitly deferred by the user; capability flags that the deployed schema
+rejects remain absent. This does not block publishing the independently usable
+plugin, and does not claim those Host/operator changes are deployed.
+
+The following Beta.7 checklist is historical implementation evidence. Where it
+mentions pending native editor validation, the completed five-platform runs in
+the Beta.7 report supersede that wording; Host publication remains separate.
+
+## Earlier Beta.7 implementation checklist
 
 Beta.7 is published and registry-signed, adding complete logical database SQL transfers and binary OCTETS handling. Its companion Host change negotiates whole-file transfers and provides a native SQL trigger editor. Validation and remaining deployment requirements are tracked in [the Beta.7 report](tests/results/beta7.md); actual asset and signature checks are recorded in [publication verification](tests/results/beta7-release.md).
 

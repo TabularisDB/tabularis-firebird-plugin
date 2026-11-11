@@ -27,6 +27,44 @@ pub fn connect(
     srp_key: &[u8],
     wire_crypt: u32,
 ) -> Bytes {
+    connect_operation(
+        db_name,
+        user,
+        username,
+        hostname,
+        srp_key,
+        wire_crypt,
+        WireOp::Attach,
+    )
+}
+
+pub fn connect_service(
+    user: &str,
+    username: &str,
+    hostname: &str,
+    srp_key: &[u8],
+    wire_crypt: u32,
+) -> Bytes {
+    connect_operation(
+        "service_mgr",
+        user,
+        username,
+        hostname,
+        srp_key,
+        wire_crypt,
+        WireOp::ServiceAttach,
+    )
+}
+
+fn connect_operation(
+    db_name: &str,
+    user: &str,
+    username: &str,
+    hostname: &str,
+    srp_key: &[u8],
+    wire_crypt: u32,
+    operation: WireOp,
+) -> Bytes {
     let protocols = [
         // PROTOCOL_VERSION, Arch type (Generic=1), min, max, weight
         [ProtocolVersion::V13 as u32, 1, 0, 5, 8],
@@ -36,7 +74,7 @@ pub fn connect(
     let mut connect = BytesMut::with_capacity(256);
 
     connect.put_u32(WireOp::Connect as u32);
-    connect.put_u32(WireOp::Attach as u32);
+    connect.put_u32(operation as u32);
     connect.put_u32(3); // CONNECT_VERSION
     connect.put_u32(1); // arch_generic
 
@@ -174,6 +212,67 @@ pub fn attach(
     attach.put_wire_bytes(&dpb);
 
     Ok(attach.freeze())
+}
+
+/// Create db request
+pub fn service_attach(
+    user: &str,
+    pass: &str,
+    protocol: ProtocolVersion,
+    role: Option<&str>,
+    auth: Option<&AuthPlugin>,
+    key: &[u8; 32],
+) -> Result<Bytes, FbError> {
+    // Reuse SRP proof construction, translating only the attach/authentication tags.
+    let data = build_dpb(
+        user,
+        pass,
+        protocol,
+        rsfbclient_core::charset::UTF_8,
+        None,
+        role,
+        Dialect::D3,
+        false,
+        auth,
+        key,
+    )?;
+    let wide = data[0] == ibase::isc_dpb_version2 as u8;
+    let mut cursor = 1;
+    let mut spb = BytesMut::new();
+    spb.put_u8(3); // isc_spb_version3: 32-bit lengths, including long SRP proofs.
+    while cursor < data.len() {
+        let tag = data[cursor];
+        cursor += 1;
+        let length = if wide {
+            let n = u32::from_le_bytes(data[cursor..cursor + 4].try_into().unwrap()) as usize;
+            cursor += 4;
+            n
+        } else {
+            let n = data[cursor] as usize;
+            cursor += 1;
+            n
+        };
+        let translated = match tag {
+            28 | 60 => Some(tag), // user / role
+            77 => Some(118),      // UTF-8 filenames
+            84 => Some(111),      // specific auth data
+            85 => Some(117),      // auth plugin list
+            86 => Some(116),      // auth plugin name
+            _ => None,
+        };
+        if let Some(tag) = translated {
+            spb.put_u8(tag);
+            spb.put_u32_le(length as u32);
+            spb.extend_from_slice(&data[cursor..cursor + length]);
+        }
+        cursor += length;
+    }
+    let mut request = BytesMut::new();
+    request.put_u32(WireOp::ServiceAttach as u32);
+    request.put_u32(0);
+    request.put_wire_bytes(b"service_mgr");
+    request.put_wire_bytes(&spb);
+    Ok(request.freeze())
 }
 
 /// Create db request
@@ -962,7 +1061,7 @@ impl RowSink for ParsedColumnSink<'_> {
 
     fn blob(&mut self, var: &XSqlVar, _sqltype: u32, id: BlobId) -> Result<(), FbError> {
         self.out.push(ParsedColumn::Blob {
-            binary: var.sqlsubtype == 0,
+            binary: var.sqlsubtype != 1,
             charset: (var.scale as u16) & 0xff,
             id,
             col_name: var.alias_name.clone(),
@@ -1204,7 +1303,7 @@ fn decode_row<S: RowSink>(
                 }
             }
 
-            ibase::SQL_BLOB if var.sqlsubtype <= 1 => {
+            ibase::SQL_BLOB => {
                 let id = resp.get_u64()?;
 
                 if read_null(resp, col_index)? {

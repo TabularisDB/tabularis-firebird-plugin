@@ -76,6 +76,103 @@ pub struct RustFbClient {
     charset: Charset,
 }
 
+/// Authenticated, encrypted Firebird Services attachment; no native client library.
+pub struct RustFbService {
+    connection: FirebirdWireConnection,
+    handle: u32,
+}
+
+impl RustFbService {
+    pub fn from_socket(
+        socket: TcpStream,
+        config: &RustFbClientAttachmentConfig,
+        options: WireOptions,
+        cancelled: Option<Arc<AtomicBool>>,
+    ) -> Result<Self, FbError> {
+        let mut connection = FirebirdWireConnection::from_socket(
+            socket,
+            config,
+            rsfbclient_core::charset::UTF_8,
+            options,
+            cancelled,
+            true,
+        )?;
+        let request = service_attach(
+            &normalize_user(&config.user),
+            &config.pass,
+            connection.version,
+            config.role_name.as_deref(),
+            connection.auth_plugin.as_ref(),
+            &connection.srp_key,
+        )?;
+        connection.socket.write_all(&request)?;
+        connection.socket.flush()?;
+        let handle = connection.read_response()?.handle;
+        Ok(Self { connection, handle })
+    }
+
+    pub fn start_backup(&mut self, database: &str) -> Result<(), FbError> {
+        self.start(database, false)
+    }
+
+    pub fn start_restore(&mut self, database: &str) -> Result<(), FbError> {
+        self.start(database, true)
+    }
+
+    fn start(&mut self, database: &str, restore: bool) -> Result<(), FbError> {
+        let spb = crate::services::start_block(database, restore)?;
+        let mut request = BytesMut::new();
+        request.put_u32(WireOp::ServiceStart as u32);
+        request.put_u32(self.handle);
+        request.put_u32(0);
+        request.put_wire_bytes(&spb);
+        self.connection.socket.write_all(&request)?;
+        self.connection.socket.flush()?;
+        self.connection.read_response()?;
+        Ok(())
+    }
+
+    /// Poll output, optionally providing exactly the stdin bytes requested last time.
+    pub fn query(
+        &mut self,
+        restore: bool,
+        input: Option<&[u8]>,
+    ) -> Result<crate::services::ServiceOutput, FbError> {
+        let mut send = BytesMut::new();
+        send.put_u8(64); // isc_info_svc_timeout, one second
+        send.put_u16_le(4);
+        send.put_u32_le(1);
+        if let Some(input) = input {
+            let length = u16::try_from(input.len())
+                .map_err(|_| FbError::from("Service input chunk too large"))?;
+            send.put_u8(62); // isc_info_svc_line carries stdin
+            send.put_u16_le(length);
+            send.extend_from_slice(input);
+        }
+        send.put_u8(1);
+        let mut request = BytesMut::new();
+        request.put_u32(WireOp::ServiceInfo as u32);
+        request.put_u32(self.handle);
+        request.put_u32(0);
+        request.put_wire_bytes(&send);
+        request.put_wire_bytes(if restore { &[62, 78] } else { &[63] });
+        request.put_u32(65535);
+        self.connection.socket.write_all(&request)?;
+        self.connection.socket.flush()?;
+        crate::services::parse_output(&self.connection.read_response()?.data)
+    }
+
+    pub fn detach(mut self) -> Result<(), FbError> {
+        let mut request = BytesMut::new();
+        request.put_u32(WireOp::ServiceDetach as u32);
+        request.put_u32(self.handle);
+        self.connection.socket.write_all(&request)?;
+        self.connection.socket.flush()?;
+        self.connection.read_response()?;
+        Ok(())
+    }
+}
+
 /// Required configuration for an attachment with the pure rust client
 #[derive(Default, Clone)]
 pub struct RustFbClientAttachmentConfig {
@@ -200,12 +297,11 @@ impl RustFbClient {
     ) -> Result<Self, FbError> {
         let conn = FirebirdWireConnection::from_socket(
             socket,
-            &config.db_name,
-            &config.user,
-            &config.pass,
+            config,
             charset.clone(),
             options,
             cancelled,
+            false,
         )?;
         Ok(Self {
             conn: Some(conn),
@@ -482,25 +578,29 @@ impl FirebirdWireConnection {
         charset: Charset,
     ) -> Result<Self, FbError> {
         let socket = TcpStream::connect((host, port))?;
+        let config = RustFbClientAttachmentConfig {
+            db_name: db_name.into(),
+            user: user.into(),
+            pass: pass.into(),
+            ..Default::default()
+        };
         Self::from_socket(
             socket,
-            db_name,
-            user,
-            pass,
+            &config,
             charset,
             WireOptions::default(),
             None,
+            false,
         )
     }
 
     fn from_socket(
         socket: TcpStream,
-        db_name: &str,
-        user: &str,
-        pass: &str,
+        config: &RustFbClientAttachmentConfig,
         charset: Charset,
         options: WireOptions,
         cancelled: Option<Arc<AtomicBool>>,
+        service: bool,
     ) -> Result<Self, FbError> {
         // The wire protocol is request/response with small writes, so Nagle has
         // nothing to coalesce and every statement waits out a delayed ACK
@@ -509,7 +609,9 @@ impl FirebirdWireConnection {
         let _ = socket.set_nodelay(true);
 
         // normalize user
-        let user = &normalize_user(user);
+        let user = &normalize_user(&config.user);
+        let pass = config.pass.as_str();
+        let db_name = config.db_name.as_str();
 
         // System username
         let username =
@@ -524,14 +626,18 @@ impl FirebirdWireConnection {
         // Random key for the srp
         let srp_key: [u8; 32] = rand::random();
 
-        let req = connect(
-            db_name,
-            user,
-            &username,
-            &hostname,
-            &srp_key,
-            options.mode.code(),
-        );
+        let req = if service {
+            connect_service(user, &username, &hostname, &srp_key, options.mode.code())
+        } else {
+            connect(
+                db_name,
+                user,
+                &username,
+                &hostname,
+                &srp_key,
+                options.mode.code(),
+            )
+        };
         socket.write_all(&req)?;
         socket.flush()?;
 

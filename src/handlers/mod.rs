@@ -1,5 +1,6 @@
 pub mod blob;
 pub mod crud;
+pub mod database_backup;
 pub mod database_dump;
 pub mod ddl;
 pub mod explain;

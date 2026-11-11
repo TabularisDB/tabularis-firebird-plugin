@@ -1,6 +1,6 @@
 [package]
 name = "firebird-plugin"
-version = "0.2.0-beta.7"
+version = "1.0.0"
 edition = "2021"
 description = "Tabularis driver plugin for Firebird"
 repository = "https://github.com/TabularisDB/tabularis-firebird-plugin"
@@ -10,6 +10,7 @@ publish = false
 [workspace]
 members = ["vendor/rsfbclient-rust"]
 default-members = ["."]
+exclude = ["target/tabularis-host/src-tauri"]
 
 [dependencies]
 base64 = "0.22.1"

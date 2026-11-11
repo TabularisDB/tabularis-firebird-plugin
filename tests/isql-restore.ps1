@@ -31,3 +31,20 @@ $request=@{jsonrpc='2.0';id=4;method='import_database_sql';params=@{params=$conf
 $response=$request | & $plugin | ConvertFrom-Json
 if(!$response.error -or $response.error.message -notlike '*Dialect 3*'){throw 'Dialect 1 import target was not rejected'}
 Write-Host 'Dialect 1 transfer guards preserve the previous export and reject an incompatible target.'
+$nativeDump=Join-Path $folder 'dialect1-native.fbk'
+$request=@{jsonrpc='2.0';id=5;method='backup_database';params=@{params=$config;file_path=$nativeDump}}|ConvertTo-Json -Depth 8 -Compress
+$response=$request | & $plugin | ConvertFrom-Json
+if($LASTEXITCODE -ne 0 -or $response.error -or $response.result.bytes -le 0){throw 'Native backup of a Dialect 1 database failed'}
+$nativeConfig=$config | ConvertTo-Json | ConvertFrom-Json
+$nativeConfig.database += '.native-restored.fdb'
+$request=@{jsonrpc='2.0';id=6;method='restore_database';params=@{params=$nativeConfig;file_path=$nativeDump;create_database=$true}}|ConvertTo-Json -Depth 8 -Compress
+$response=$request | & $plugin | ConvertFrom-Json
+if($LASTEXITCODE -ne 0 -or $response.error -or !$response.result.created_database){throw 'Native Dialect 1 restore failed'}
+$request=@{jsonrpc='2.0';id=7;method='execute_query';params=@{params=$nativeConfig;query='SELECT MON$SQL_DIALECT FROM MON$DATABASE'}}|ConvertTo-Json -Depth 8 -Compress
+$response=$request | & $plugin | ConvertFrom-Json
+if($LASTEXITCODE -ne 0 -or $response.error -or $response.result.rows[0][0] -ne 1){throw 'Native restore did not preserve SQL Dialect 1'}
+$gbak=Join-Path (Split-Path $IsqlPath -Parent) 'gbak.exe'
+$toolTarget="$($config.host)/$($config.port):$($config.database).gbak.fdb"
+& $gbak -create -kill $nativeDump $toolTarget
+if($LASTEXITCODE -ne 0){throw 'Independent gbak could not restore the native backup'}
+Write-Host 'Native backup preserves Dialect 1 and restores through independent gbak.'

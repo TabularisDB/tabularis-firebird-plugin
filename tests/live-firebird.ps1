@@ -3,6 +3,7 @@ param(
     [ValidateSet('3', '4', '5')][string]$Version = '5',
     [ValidateRange(1024, 65535)][int]$Port = 13050,
     [ValidateSet('Default','ChaCha64','ChaCha','Arc4','Disabled')][string]$ServerWireCrypt = 'Default',
+    [string]$TestFilter = 'live_',
     [scriptblock]$AfterTests,
     [switch]$OperationalTests,
     [ValidateRange(5, 7200)][int]$OperationalDurationSeconds = 30
@@ -21,7 +22,7 @@ $serverProcess = $null
 $ownsTestDir = $false
 $testDir = [IO.Path]::GetFullPath((Join-Path $repoRoot 'target/firebird-test'))
 $savedEnvironment = @{}
-foreach ($key in @('FIREBIRD_LOCK', 'FIREBIRD_TEST_CONFIG', 'FIREBIRD_TEST_CIPHER', 'ISC_USER', 'ISC_PASSWORD')) {
+foreach ($key in @('FIREBIRD_LOCK', 'FIREBIRD_TEST_CONFIG', 'FIREBIRD_TEST_CIPHER', 'FIREBIRD_TEST_LIBRARY', 'ISC_USER', 'ISC_PASSWORD')) {
     $savedEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
 }
 try {
@@ -40,6 +41,7 @@ try {
     $runDir = (New-Item -ItemType Directory -Path (Join-Path $cacheDir ([Guid]::NewGuid().ToString('N')))).FullName
     $serverDir = Join-Path $runDir 'server'
     Expand-Archive -LiteralPath $archive -DestinationPath $serverDir
+    $env:FIREBIRD_TEST_LIBRARY = Join-Path $serverDir 'fbclient.dll'
     # All processes in this test must use the same directory for shared memory mappings.
     $env:FIREBIRD_LOCK = (New-Item -ItemType Directory -Force -Path (Join-Path $cacheDir 'lock')).FullName
     $env:ISC_USER = $null
@@ -48,6 +50,7 @@ try {
 RemoteBindAddress = 127.0.0.1
 RemoteServicePort = $Port
 IpcName = tabularis_test_$Port
+ExternalFileAccess = Restrict $runDir
 "@ | Add-Content -LiteralPath (Join-Path $serverDir 'firebird.conf')
     $env:FIREBIRD_TEST_CIPHER = if ($ServerWireCrypt -eq 'Default') { $null } else { $ServerWireCrypt }
     if ($ServerWireCrypt -eq 'Disabled') {
@@ -87,7 +90,7 @@ IpcName = tabularis_test_$Port
         Write-Host 'Skipping Firebird 4+ types (INT128 decimals, time zones, DECFLOAT) on Firebird 3.'
         $testArguments += @('--skip', '_firebird4')
     }
-    cargo test --locked live_ -- @testArguments
+    cargo test --locked $TestFilter -- @testArguments
     if ($LASTEXITCODE -ne 0) { throw 'Firebird integration tests failed' }
     cargo build --locked --bin firebird-plugin
     if ($LASTEXITCODE -ne 0) { throw 'Plugin build failed' }

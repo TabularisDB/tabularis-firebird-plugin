@@ -16,7 +16,7 @@ impl Drop for Process {
     }
 }
 
-fn stalled_handshake(cancel: bool) {
+fn stalled_handshake(cancel: bool, native_backup: bool) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let (accepted, ready) = mpsc::channel();
@@ -47,7 +47,14 @@ fn stalled_handshake(cancel: bool) {
         }
     });
     let started = Instant::now();
-    writeln!(input, "{}", json!({"jsonrpc":"2.0","id":1,"method":"test_connection","params":{"params":{"host":"127.0.0.1","port":port,"username":"test","password":"test","database":"unused","connect_timeout_secs":if cancel {10}else{1}}}})).unwrap();
+    let backup_path = std::env::temp_dir().join(format!(
+        "tabularis-backup-protocol-{}-{port}.fbk",
+        std::process::id()
+    ));
+    if native_backup {
+        std::fs::write(&backup_path, b"previous backup").unwrap();
+    }
+    writeln!(input, "{}", json!({"jsonrpc":"2.0","id":1,"method":if native_backup {"backup_database"} else {"test_connection"},"params":{"file_path":backup_path,"params":{"host":"127.0.0.1","port":port,"username":"test","password":"test","database":"unused","connect_timeout_secs":if cancel {10}else{1}}}})).unwrap();
     input.flush().unwrap();
     ready.recv_timeout(Duration::from_secs(3)).unwrap();
     if cancel {
@@ -84,16 +91,26 @@ fn stalled_handshake(cancel: bool) {
         "cancel notifications must not emit responses"
     );
     server.join().unwrap();
+    if native_backup {
+        assert_eq!(std::fs::read(&backup_path).unwrap(), b"previous backup");
+        std::fs::remove_file(&backup_path).unwrap();
+    }
 }
 
 #[test]
 fn cancel_interrupts_a_stalled_handshake_and_keeps_stdio_usable() {
-    stalled_handshake(true);
+    stalled_handshake(true, false);
 }
 
 #[test]
 fn connect_timeout_interrupts_a_stalled_handshake() {
-    stalled_handshake(false);
+    stalled_handshake(false, false);
+}
+
+#[test]
+fn native_backup_handshake_cancellation_and_timeout_preserve_the_previous_file() {
+    stalled_handshake(true, true);
+    stalled_handshake(false, true);
 }
 
 #[test]

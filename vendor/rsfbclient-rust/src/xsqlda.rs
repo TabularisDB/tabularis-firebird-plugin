@@ -129,7 +129,7 @@ impl XSqlVar {
                 self.sqlsubtype = 0;
             }
 
-            ibase::SQL_BLOB if matches!(sqlsubtype, 0 | 1) => {
+            ibase::SQL_BLOB => {
                 self.sqltype = ibase::SQL_BLOB as i16 + 1;
             }
 
@@ -495,13 +495,17 @@ mod tests {
         var.coerce().unwrap();
         let blr = xsqlda_to_blr(&[var]).unwrap();
         assert_eq!(&blr[6..11], &[consts::blr::BLOB2, 1, 0, 52, 0]);
-        for subtype in [-1, 2] {
+        for subtype in [i16::MIN, -123, -1, 0, 2, i16::MAX] {
             let mut var = XSqlVar {
                 sqltype: ibase::SQL_BLOB as i16,
                 sqlsubtype: subtype,
                 ..Default::default()
             };
-            assert!(var.coerce().is_err());
+            var.coerce().unwrap();
+            assert_eq!(
+                &xsqlda_to_blr(&[var]).unwrap()[6..8],
+                &[consts::blr::QUAD, 0]
+            );
         }
     }
 
