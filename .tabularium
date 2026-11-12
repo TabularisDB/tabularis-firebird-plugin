@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "connection_metadata": true,
   "description": "Tabularis driver plugin for Firebird",
+  "icon": "https://raw.githubusercontent.com/TabularisDB/tabularis-firebird-plugin/main/firebird-icon.svg",
   "kind": "driver",
   "engine": "firebird",
   "paradigms": ["relational"],
