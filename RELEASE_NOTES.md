@@ -1,6 +1,6 @@
-# Unreleased
+# Firebird driver 1.0.1
 
-Add the Firebird logo to the Tabularium listing. The next normal release's
+Add the Firebird logo to the Tabularium listing. This release's
 standalone `default.tabularium` includes the icon URL from the root manifest.
 
 # Firebird driver 1.0.0
